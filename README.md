@@ -9,13 +9,23 @@ each institution's document page and runs entirely inside your browser.
 | Institution | Documents | Status |
 | --- | --- | --- |
 | Coinbase Pro | Monthly account and fill statements | Supported |
-| Fidelity Investments | Statements, trade confirmations, and tax documents | Adapter in live calibration |
+| Fidelity Investments | Statements, trade confirmations, and account records | Supported |
 | Wealthfront | Statements, trade confirmations, and tax documents | Adapter in live calibration |
 
-Fidelity and Wealthfront deliberately use separate DOM adapters. Fidelity is organized
-around year-specific views; Wealthfront exposes a paginated all-years table and may prepare
-a PDF asynchronously after it is clicked. Neither is forced through Coinbase's monthly
-report-generation model.
+Providers deliberately use separate adapters rather than a shared model.
+
+Fidelity drives the document center's own JSON APIs instead of its DOM. The rendered
+table shows at most ten rows per filter, sorted newest first, with no pagination — so
+scraping it cannot reach more than the ten most recent documents of any period, and its
+links carry no URL to harvest. The listing API accepts an arbitrary date range and returns
+everything in one request. Documents resolve into three scopes: per-account, householded
+(one document covering several accounts), and customer-level records with no account at
+all. Householded and per-account documents for the same period are distinct files and are
+both kept. Employer documents are out of scope; they live on NetBenefits, a separate
+origin with its own session.
+
+Wealthfront exposes a paginated all-years table and may prepare a PDF asynchronously after
+it is clicked. Neither is forced through Coinbase's monthly report-generation model.
 
 ## How it works
 
@@ -26,6 +36,12 @@ The extension has a small shared core for:
 - Firefox download-history checks;
 - retries, rate-limit backoff, stopping, and progress reporting;
 - an in-page launcher and Shadow DOM drawer that are insulated from the host site's CSS.
+
+Downloading is a two-step flow. Choosing a date range and finding documents lists what
+would be fetched, grouped by the folder each file lands in; downloading is only enabled
+once that preview exists, and any change to the controls invalidates it. Requests are
+spaced with a randomized delay so the cadence is not a fixed signature, and completed
+document IDs are recorded so an interrupted run resumes instead of restarting.
 
 Each provider owns its page detection, document discovery, pagination, authenticated
 download behavior, and filenames under `providers/`.

@@ -339,9 +339,123 @@
     };
   }
 
+  function isoToday() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function isoYearsAgo(years) {
+    const date = new Date();
+    date.setUTCFullYear(date.getUTCFullYear() - years);
+    return date.toISOString().slice(0, 10);
+  }
+
+  function storage() {
+    return app.createProviderStorage(PROVIDER_ID);
+  }
+
+  async function loadState() {
+    const settings = await storage().loadSettings();
+    return settings || {};
+  }
+
+  function renderControls(container, state = {}) {
+    container.textContent = '';
+
+    const range = document.createElement('div');
+    range.className = 'row';
+    // Documents reach back to 2011, but defaulting to all of it would make the
+    // common case (recent documents) the slowest one.
+    const startValue = state.startDate || isoYearsAgo(1);
+    const endValue = state.endDate || isoToday();
+    for (const [name, label, value] of [
+      ['startDate', 'From', startValue],
+      ['endDate', 'To', endValue],
+    ]) {
+      const field = document.createElement('label');
+      field.textContent = label;
+      const input = document.createElement('input');
+      input.type = 'date';
+      input.name = name;
+      input.value = value;
+      field.appendChild(input);
+      range.appendChild(field);
+    }
+    container.appendChild(range);
+
+    const types = document.createElement('div');
+    types.className = 'row';
+    const selected = Array.isArray(state.docTypes) && state.docTypes.length
+      ? state.docTypes
+      : DOC_TYPES.map((entry) => entry.code);
+    // AR and AC are both "Account records" to the customer; showing the codes
+    // would leak an implementation detail, so they share one checkbox.
+    const choices = [
+      { codes: ['STMT'], label: 'Statements' },
+      { codes: ['TC'], label: 'Trade confirmations' },
+      { codes: ['AR', 'AC'], label: 'Account records' },
+    ];
+    for (const choice of choices) {
+      const field = document.createElement('label');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.dataset.codes = choice.codes.join(',');
+      input.checked = choice.codes.some((code) => selected.includes(code));
+      field.appendChild(input);
+      field.appendChild(document.createTextNode(choice.label));
+      types.appendChild(field);
+    }
+    container.appendChild(types);
+
+    const note = document.createElement('div');
+    note.className = 'fsd-provider-status';
+    note.textContent = 'Employer documents live on NetBenefits and are not covered here.';
+    container.appendChild(note);
+  }
+
+  async function readOptions(container) {
+    const startDate = container.querySelector('input[name="startDate"]').value;
+    const endDate = container.querySelector('input[name="endDate"]').value;
+    assertDateString(startDate, 'From date');
+    assertDateString(endDate, 'To date');
+    if (startDate > endDate) {
+      throw new RangeError('The From date must not be after the To date');
+    }
+
+    const docTypes = [];
+    for (const input of container.querySelectorAll('input[type="checkbox"][data-codes]')) {
+      if (input.checked) docTypes.push(...input.dataset.codes.split(','));
+    }
+    if (docTypes.length === 0) {
+      throw new Error('Choose at least one document type');
+    }
+
+    await storage().saveSettings({ startDate, endDate, docTypes });
+    return {
+      startDate,
+      endDate,
+      docTypes,
+      // Spread requests out; a burst across 1,000+ documents is what would draw
+      // attention, and the whole job is unattended anyway.
+      delayMs: 1500,
+      jitterRatio: 0.6,
+    };
+  }
+
+  function findMountPoint() {
+    // Anchor next to the site's own date filter so the button sits with the
+    // controls it complements.
+    return document.querySelector('#options-select-TimeFilter')
+      || document.querySelector('table.pvd-table__table')
+      || null;
+  }
+
   const provider = {
     id: PROVIDER_ID,
     label: 'Fidelity',
+    renderControls,
+    readOptions,
+    findMountPoint,
+    loadState,
     // The document center is the only origin where these APIs are same-site.
     matches(url) {
       return typeof url === 'string' && /^https:\/\/digitalservices\.fidelity\.com\/navigate\/ent-documentcenter\//.test(url);

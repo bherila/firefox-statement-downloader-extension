@@ -143,7 +143,11 @@
     });
     let discovered;
     try {
-      discovered = await provider.discoverDocuments(options, notify, stopController);
+      // A caller that has already previewed the range passes the documents back
+      // so the listing is not requested a second time.
+      discovered = Array.isArray(options.documents)
+        ? options.documents
+        : await provider.discoverDocuments(options, notify, stopController);
     } catch (error) {
       if (!isStopped(stopController)) throw error;
       summary.stopped = true;

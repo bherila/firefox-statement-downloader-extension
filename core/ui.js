@@ -35,6 +35,11 @@
     .actions button { appearance: none; border: 1px solid #a7abb2; border-radius: 6px; background: #f6f7f8; cursor: pointer; padding: 8px 11px; }
     .actions .primary { background: #1769e0; border-color: #1769e0; color: #fff; font-weight: 600; }
     button:disabled { cursor: default; opacity: .5; }
+    .preview { border: 1px solid #d7dade; border-radius: 6px; background: #fff; font-size: 12px; margin-bottom: 10px; padding: 10px 12px; }
+    .preview[hidden] { display: none; }
+    .preview-count { font-weight: 600; margin-bottom: 6px; }
+    .preview-groups { display: grid; gap: 2px; list-style: none; margin: 0; max-height: 180px; overflow: auto; padding: 0; }
+    .preview-groups li { color: #40454d; display: flex; justify-content: space-between; gap: 12px; }
     .status { border-radius: 6px; background: #f0f2f4; font-size: 12px; padding: 8px 10px; }
     .status.error { background: #fde8e8; color: #8b1717; }
     .log { border: 1px solid #e0e2e5; border-radius: 6px; background: #fafbfc; font: 11px/1.5 ui-monospace, Menlo, monospace;
@@ -64,6 +69,9 @@
     let controller = null;
     let destroyed = false;
     let providerReady = false;
+    // The previewed range and its documents, cleared whenever the options change
+    // so the user can never download a list that no longer matches the controls.
+    let found = null;
 
     function close() {
       if (!drawer) return;
@@ -105,9 +113,56 @@
       log.scrollTop = log.scrollHeight;
     }
 
-    async function start() {
-      const startButton = drawer.shadow.querySelector('[data-action="start"]');
-      const stopButton = drawer.shadow.querySelector('[data-action="stop"]');
+    function buttons() {
+      return {
+        find: drawer.shadow.querySelector('[data-action="find"]'),
+        start: drawer.shadow.querySelector('[data-action="start"]'),
+        stop: drawer.shadow.querySelector('[data-action="stop"]'),
+      };
+    }
+
+    function renderPreview(documents) {
+      const pane = drawer.shadow.querySelector('.preview');
+      pane.textContent = '';
+      if (!documents) {
+        pane.hidden = true;
+        return;
+      }
+
+      const heading = document.createElement('div');
+      heading.className = 'preview-count';
+      heading.textContent = documents.length === 1
+        ? '1 document found'
+        : `${documents.length} documents found`;
+      pane.appendChild(heading);
+
+      // Group by the folder each document will be filed under, so the preview
+      // shows where files will land rather than just how many there are.
+      const groups = new Map();
+      for (const document of documents) {
+        const parts = String(document.filename || '').split('/');
+        const group = parts.length > 2 ? parts[1] : 'Other';
+        groups.set(group, (groups.get(group) || 0) + 1);
+      }
+      const list = document.createElement('ul');
+      list.className = 'preview-groups';
+      for (const [name, count] of [...groups].sort((a, b) => b[1] - a[1])) {
+        const item = document.createElement('li');
+        item.textContent = `${name} — ${count}`;
+        list.appendChild(item);
+      }
+      pane.appendChild(list);
+      pane.hidden = false;
+    }
+
+    function invalidatePreview() {
+      found = null;
+      renderPreview(null);
+      if (drawer) buttons().start.disabled = true;
+    }
+
+    async function find() {
+      const { find: findButton, start: startButton } = buttons();
       if (!providerReady) {
         report({ level: 'error', message: 'Provider controls are still loading.' });
         return;
@@ -115,8 +170,37 @@
       try {
         const options = await provider.readOptions(drawer.shadow.querySelector('.controls'));
         controller = FSD.createStopController();
+        findButton.disabled = true;
+        buttons().stop.disabled = false;
+        found = { options, documents: await provider.discoverDocuments(options, report, controller) };
+        renderPreview(found.documents);
+        // Nothing to download is a valid outcome, not an error state.
+        startButton.disabled = found.documents.length === 0;
+        report(`Found ${found.documents.length} document(s). Review, then choose Download.`);
+      } catch (error) {
+        invalidatePreview();
+        report({ level: 'error', message: `ERROR: ${error.message || error}` });
+      } finally {
+        controller = null;
+        findButton.disabled = false;
+        buttons().stop.disabled = true;
+      }
+    }
+
+    async function start() {
+      const { find: findButton, start: startButton, stop: stopButton } = buttons();
+      if (!found) {
+        report({ level: 'error', message: 'Choose Find documents first.' });
+        return;
+      }
+      try {
+        controller = FSD.createStopController();
         startButton.disabled = true;
+        findButton.disabled = true;
         stopButton.disabled = false;
+        // Reuse the previewed list so the range is not queried twice and the
+        // user downloads exactly what they were shown.
+        const options = { ...found.options, documents: found.documents };
         const summary = await FSD.runBatch({ provider, options, controller, report });
         report(`Finished: ${summary.downloaded} downloaded, ${summary.skipped} skipped, ${summary.failed} failed.`);
       } catch (error) {
@@ -124,6 +208,7 @@
       } finally {
         controller = null;
         startButton.disabled = false;
+        findButton.disabled = false;
         stopButton.disabled = true;
       }
     }
@@ -142,10 +227,12 @@
             </div>
             <div class="controls"></div>
             <div class="actions">
-              <button class="primary" data-action="start" disabled>Start download</button>
+              <button class="primary" data-action="find" disabled>Find documents</button>
+              <button data-action="start" disabled>Download</button>
               <button data-action="stop" disabled>Stop</button>
               <button data-action="reset">Reset progress</button>
             </div>
+            <div class="preview" hidden></div>
             <div class="status">Ready.</div>
             <div class="log" aria-live="polite"></div>
           </section>
@@ -153,7 +240,12 @@
       `);
       drawer.shadow.querySelector('.subtitle').textContent = provider.label;
       drawer.shadow.querySelectorAll('[data-action="close"]').forEach((button) => button.addEventListener('click', close));
+      drawer.shadow.querySelector('[data-action="find"]').addEventListener('click', find);
       drawer.shadow.querySelector('[data-action="start"]').addEventListener('click', start);
+      // Any edit to the controls makes the previewed list stale.
+      const controls = drawer.shadow.querySelector('.controls');
+      controls.addEventListener('input', invalidatePreview);
+      controls.addEventListener('change', invalidatePreview);
       drawer.shadow.querySelector('[data-action="stop"]').addEventListener('click', () => controller && controller.stop());
       drawer.shadow.querySelector('[data-action="reset"]').addEventListener('click', async () => {
         await FSD.createProviderStorage(provider.id).clearDone();
@@ -163,7 +255,8 @@
       Promise.resolve(provider.loadState ? provider.loadState() : {}).then((state) => {
         provider.renderControls(drawer.shadow.querySelector('.controls'), state || {});
         providerReady = true;
-        drawer.shadow.querySelector('[data-action="start"]').disabled = false;
+        // Download stays disabled until a preview exists; Find is the entry point.
+        drawer.shadow.querySelector('[data-action="find"]').disabled = false;
       }).catch((error) => {
         providerReady = false;
         report({ level: 'error', message: `Unable to load settings: ${error.message || error}` });
