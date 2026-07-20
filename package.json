@@ -2,9 +2,12 @@
   "name": "firefox-statement-downloader-extension",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@11.5.0",
   "description": "Firefox extension that bulk-downloads statements and related financial documents from supported institutions.",
   "scripts": {
-    "build": "mkdir -p dist && rm -f dist/firefox-statement-downloader-extension.zip && zip -X dist/firefox-statement-downloader-extension.zip manifest.json background.js content.js panel.css",
+    "build": "mkdir -p dist && zip -FS -X dist/firefox-statement-downloader-extension.zip manifest.json background.js content.js core/*.js providers/*.js README.md",
+    "check": "node --check background.js && node --check content.js && for file in core/*.js providers/*.js; do node --check \"$file\"; done",
+    "test": "node --test tests/*.test.js",
     "clean": "rm -rf dist"
   }
 }
