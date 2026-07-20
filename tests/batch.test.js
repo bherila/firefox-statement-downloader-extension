@@ -227,3 +227,99 @@ test('stop controller exposes an awaitable signal and interrupted discovery retu
   assert.equal(await controller.waitForStop(), 'stop discovery');
   assert.equal(controller.signal.aborted, true);
 });
+
+test('spreads the gap between downloads instead of using a fixed cadence', async () => {
+  const fake = createBrowser();
+  const FSD = loadCore(fake);
+  const slept = [];
+
+  const provider = {
+    id: 'fidelity',
+    discoverDocuments: async () => [doc('a'), doc('b'), doc('c')],
+    downloadDocument: async (document) => ({ url: `https://example.test/${document.id}` }),
+  };
+
+  // A deterministic sequence stands in for Math.random so the spread is exact.
+  const randoms = [0, 0.5, 1];
+  let index = 0;
+
+  await FSD.runBatch({
+    provider,
+    options: {
+      delayMs: 1000,
+      jitterRatio: 0.5,
+      random: () => randoms[index++ % randoms.length],
+      sleep: async (ms) => { slept.push(ms); },
+      checkDownloadHistory: false,
+    },
+  });
+
+  // delayMs 1000 with ratio 0.5 spans 750..1250, centred on the base delay.
+  assert.deepEqual(slept, [750, 1000]);
+});
+
+test('jitterRatio of zero preserves an exact fixed delay', async () => {
+  const fake = createBrowser();
+  const FSD = loadCore(fake);
+  const slept = [];
+
+  await FSD.runBatch({
+    provider: {
+      id: 'fidelity',
+      discoverDocuments: async () => [doc('a'), doc('b')],
+      downloadDocument: async () => ({ url: 'https://example.test/a' }),
+    },
+    options: {
+      delayMs: 500,
+      jitterRatio: 0,
+      sleep: async (ms) => { slept.push(ms); },
+      checkDownloadHistory: false,
+    },
+  });
+
+  assert.deepEqual(slept, [500]);
+});
+
+test('rejects a jitter ratio outside the supported range', async () => {
+  const fake = createBrowser();
+  const FSD = loadCore(fake);
+
+  await assert.rejects(() => FSD.runBatch({
+    provider: {
+      id: 'fidelity',
+      discoverDocuments: async () => [],
+      downloadDocument: async () => ({ url: 'x' }),
+    },
+    // The core runs in its own vm realm, so match the message rather than the
+    // RangeError constructor, which is a different identity across realms.
+    options: { jitterRatio: 5 },
+  }), /jitterRatio must be between 0 and 2/);
+});
+
+test('routes byte payloads to the background download handler', async () => {
+  const fake = createBrowser();
+  fake.api.runtime.sendMessage = async (message) => {
+    fake.messages.push(message);
+    if (message.action === 'checkDownloaded') return { exists: false };
+    if (message.action === 'downloadData') return { ok: true, downloadId: 7 };
+    throw new Error(`unexpected message: ${message.action}`);
+  };
+  const FSD = loadCore(fake);
+  const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+
+  const summary = await FSD.runBatch({
+    provider: {
+      id: 'fidelity',
+      discoverDocuments: async () => [doc('a')],
+      downloadDocument: async () => ({ data: bytes, contentType: 'application/pdf' }),
+    },
+    options: { delayMs: 0, checkDownloadHistory: false },
+  });
+
+  assert.equal(summary.downloaded, 1);
+  const sent = fake.messages.find((message) => message.action === 'downloadData');
+  // The bytes must reach the background intact; there is no URL to fall back on.
+  assert.deepEqual(sent.data, bytes);
+  assert.equal(sent.contentType, 'application/pdf');
+  assert.equal(sent.filename, 'a.pdf');
+});

@@ -150,6 +150,57 @@ function finishDownloadWatch(watchId, timeoutMs) {
   });
 }
 
+// Object URLs must stay alive until the download has actually read them, but
+// leaking them would pin whole documents in memory for the life of the session.
+function revokeWhenSettled(downloadId, objectUrl) {
+  let timeoutId = null;
+  const done = (delta) => {
+    if (delta.id !== downloadId) return;
+    const finished = delta.state
+      && (delta.state.current === 'complete' || delta.state.current === 'interrupted');
+    if (!finished) return;
+    browser.downloads.onChanged.removeListener(done);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    URL.revokeObjectURL(objectUrl);
+  };
+  browser.downloads.onChanged.addListener(done);
+  // Backstop: a download that never reports a terminal state would otherwise
+  // hold the blob forever.
+  timeoutId = setTimeout(() => {
+    browser.downloads.onChanged.removeListener(done);
+    URL.revokeObjectURL(objectUrl);
+  }, 120000);
+}
+
+async function downloadBytes(message) {
+  const { data, filename } = message;
+  if (!filename) {
+    throw new Error('downloadData requires a filename');
+  }
+  // Messaging may deliver the payload as a Uint8Array or as a plain array,
+  // depending on how the sender serialized it.
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data || []);
+  if (bytes.length === 0) {
+    throw new Error('downloadData received no bytes');
+  }
+
+  const blob = new Blob([bytes], { type: message.contentType || 'application/octet-stream' });
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const downloadId = await browser.downloads.download({
+      url: objectUrl,
+      filename,
+      conflictAction: message.conflictAction || 'uniquify',
+      saveAs: false,
+    });
+    revokeWhenSettled(downloadId, objectUrl);
+    return downloadId;
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+}
+
 browser.runtime.onMessage.addListener((message, sender = {}) => {
   if (!message || typeof message.action !== 'string') {
     return undefined;
@@ -162,6 +213,15 @@ browser.runtime.onMessage.addListener((message, sender = {}) => {
       conflictAction: message.conflictAction || 'uniquify',
       saveAs: false,
     }).then((downloadId) => ({ ok: true, downloadId }))
+      .catch((error) => ({ ok: false, error: String(error) }));
+  }
+
+  // Some providers return document bytes in the API response rather than a
+  // fetchable URL, so the blob has to be created here where it can outlive the
+  // content script that produced it.
+  if (message.action === 'downloadData') {
+    return downloadBytes(message)
+      .then((downloadId) => ({ ok: true, downloadId }))
       .catch((error) => ({ ok: false, error: String(error) }));
   }
 

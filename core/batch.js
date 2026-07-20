@@ -78,6 +78,7 @@
     return outcome && !isStopped(controller);
   }
 
+  /** @param {FsdRunBatchInput} [input] */
   async function runBatch({ provider, options = {}, controller, report } = {}) {
     if (!provider || typeof provider !== 'object') {
       throw new TypeError('provider is required');
@@ -99,6 +100,24 @@
     const retryDelayMs = options.retryDelayMs === undefined ? 1000 : options.retryDelayMs;
     const delayMs = options.delayMs === undefined ? 1000 : options.delayMs;
     const wait = options.sleep || namespace.sleep || ((ms) => new Promise((resolve) => root.setTimeout(resolve, ms)));
+
+    // A fixed cadence between downloads is itself a recognisable signature, so
+    // the gap is spread around delayMs rather than sleeping on a metronome.
+    const jitterRatio = options.jitterRatio === undefined ? 0.5 : options.jitterRatio;
+    const random = options.random || Math.random;
+
+    if (!Number.isFinite(jitterRatio) || jitterRatio < 0 || jitterRatio > 2) {
+      throw new RangeError('options.jitterRatio must be between 0 and 2');
+    }
+    if (typeof random !== 'function') {
+      throw new TypeError('options.random must be a function');
+    }
+
+    function nextDelay() {
+      if (jitterRatio === 0) return delayMs;
+      const spread = delayMs * jitterRatio;
+      return Math.max(0, Math.round(delayMs - spread / 2 + random() * spread));
+    }
 
     if (!Number.isInteger(attempts) || attempts < 1) {
       throw new RangeError('options.attempts must be a positive integer');
@@ -175,9 +194,24 @@
         return outcome;
       }
 
+      // Providers whose API returns document bytes instead of a fetchable URL
+      // hand the payload to the background script, which owns the blob.
+      if (outcome && outcome.data) {
+        const dataResult = await root.browser.runtime.sendMessage({
+          action: 'downloadData',
+          data: outcome.data,
+          contentType: outcome.contentType,
+          filename: outcome.filename || document.filename,
+        });
+        if (!dataResult || dataResult.ok === false) {
+          throw new Error(dataResult && dataResult.error ? dataResult.error : 'background download failed');
+        }
+        return dataResult;
+      }
+
       const url = typeof outcome === 'string' ? outcome : outcome && outcome.url;
       if (typeof url !== 'string' || url.trim() === '') {
-        throw new Error('provider download outcome must contain a URL or { downloaded: true }');
+        throw new Error('provider download outcome must contain a URL, bytes, or { downloaded: true }');
       }
       const result = await root.browser.runtime.sendMessage({
         action: 'download',
@@ -283,7 +317,7 @@
         break;
       }
       if (delayMs > 0 && index < documents.length - 1) {
-        if (!await waitUnlessStopped(wait(delayMs), stopController)) {
+        if (!await waitUnlessStopped(wait(nextDelay()), stopController)) {
           summary.stopped = true;
           break;
         }
