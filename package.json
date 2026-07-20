@@ -1,0 +1,10 @@
+{
+  "name": "coinbase-statement-downloader",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Firefox extension that bulk-downloads Coinbase Pro statement PDFs via the report-generation API instead of clicking through each month by hand.",
+  "scripts": {
+    "build": "mkdir -p dist && rm -f dist/coinbase-statement-downloader.zip && zip -X dist/coinbase-statement-downloader.zip manifest.json background.js content.js panel.css",
+    "clean": "rm -rf dist"
+  }
+}

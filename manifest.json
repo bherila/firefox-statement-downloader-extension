@@ -1,0 +1,31 @@
+{
+  "manifest_version": 2,
+  "name": "Coinbase Pro Statement Downloader",
+  "version": "1.0.0",
+  "description": "Bulk-downloads historical Coinbase Pro account & fill statement PDFs via the same report-generation API the Statements page uses, instead of clicking through each month by hand.",
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": true
+  },
+  "permissions": [
+    "https://accounts.coinbase.com/*",
+    "https://gdax-reports.s3.amazonaws.com/*",
+    "webRequest",
+    "downloads",
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://accounts.coinbase.com/statements/pro*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "coinbase-pro-statement-downloader@bwh.local",
+      "strict_min_version": "78.0"
+    }
+  }
+}
