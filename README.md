@@ -121,6 +121,28 @@ Provider documents use the following normalized shape:
 }
 ```
 
+## Contributing safely
+
+Providers are calibrated against real accounts, so real account numbers, plan
+identifiers and employer names are easy to paste into a test fixture without noticing.
+This is a public repository, and once such a value is pushed, rewriting history does not
+reliably remove it.
+
+`scripts/check-personal-data.sh` runs as a pre-commit hook and blocks commits that add
+account-shaped identifiers, home directory paths, or session material. Install it after
+cloning:
+
+```bash
+ln -sf ../../scripts/check-personal-data.sh .git/hooks/pre-commit
+```
+
+The structural patterns need no configuration. To also match literal values from your own
+accounts, add extended-regex patterns, one per line, to `.git/personal-data-denylist` —
+which lives inside `.git` precisely so that the literals are never committed to the tree
+they protect.
+
+Test fixtures should use obviously synthetic values such as `100000001` or `2000001`.
+
 ## Privacy and safety
 
 - The extension does not ask for, store, or transmit institution passwords.

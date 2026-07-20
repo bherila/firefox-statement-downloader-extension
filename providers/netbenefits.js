@@ -294,7 +294,7 @@
   function planFolder(context) {
     const name = (context.planName || '').trim();
     // Without a usable name the plan number stands alone rather than being
-    // repeated as "89766-50002".
+    // repeated as "12345-12345".
     return name
       ? sanitizeSegment(`${name}-${context.sodPlan}`, String(context.sodPlan))
       : sanitizeSegment(context.sodPlan, 'plan');
