@@ -547,6 +547,7 @@
       || null;
   }
 
+  /** @type {FsdProvider} */
   const provider = {
     id: PROVIDER_ID,
     label: 'Fidelity',
@@ -557,6 +558,9 @@
     // The document center is the only origin where these APIs are same-site.
     matches(url) {
       return typeof url === 'string' && /^https:\/\/digitalservices\.fidelity\.com\/navigate\/ent-documentcenter\//.test(url);
+    },
+    isSupportedPage() {
+      return provider.matches(root.location ? root.location.href : '');
     },
     requiresDateRange: true,
     docTypes: DOC_TYPES,

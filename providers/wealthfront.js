@@ -356,16 +356,23 @@
   }
 
   function findMountPoint() {
-    return document.querySelector('select[name="selectedDocumentType"]')
-      || document.querySelector('select[name="selectedAccountId"]')
-      || null;
+    // The filter row re-renders whenever a filter changes, and React discards
+    // the injected launcher along with it. The section heading is static, so it
+    // is a far more durable anchor.
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4'));
+    const heading = headings.find((element) => /statements and trade confirmations/i.test(element.textContent || ''));
+    return heading || document.querySelector('select[name="selectedDocumentType"]') || null;
   }
 
+  /** @type {FsdProvider} */
   const provider = {
     id: PROVIDER_ID,
     label: 'Wealthfront',
     matches(url) {
       return typeof url === 'string' && /^https:\/\/www\.wealthfront\.com\/documents/.test(url);
+    },
+    isSupportedPage() {
+      return provider.matches(root.location ? root.location.href : '');
     },
     requiresDateRange: true,
     docTypes: DOC_TYPES,

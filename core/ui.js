@@ -48,6 +48,9 @@
   `;
 
   function createShadowHost(id) {
+    // A reloaded or re-injected content script would otherwise stack a second
+    // launcher on top of the one already in the page.
+    document.querySelectorAll(`[data-fsd-host="${id}"]`).forEach((stale) => stale.remove());
     const host = document.createElement('span');
     host.dataset.fsdHost = id;
     const shadow = host.attachShadow({ mode: 'open' });
@@ -63,7 +66,12 @@
     shadow.appendChild(template.content.cloneNode(true));
   }
 
+  // How many times the launcher may be torn out of the page before it stops
+  // trying to sit inline and moves to a fixed corner position instead.
+  const MAX_REANCHOR_ATTEMPTS = 3;
+
   function mountProvider(provider) {
+    let detachCount = 0;
     let launcher = null;
     let drawer = null;
     let controller = null;
@@ -264,7 +272,11 @@
     }
 
     function buildLauncher() {
-      const mountPoint = provider.findMountPoint();
+      // Anchoring beside the site's own controls reads best, but on a framework
+      // that re-renders that subtree the injected node is discarded as foreign.
+      // Rather than fight it indefinitely, detach a few times and then move the
+      // launcher out of the page's tree for good.
+      const mountPoint = detachedTooOften() ? null : provider.findMountPoint();
       launcher = createShadowHost(`${provider.id}-launcher`);
       appendMarkup(launcher.shadow, '<button class="launcher" type="button">Bulk download</button>');
       launcher.shadow.querySelector('button').addEventListener('click', open);
@@ -282,10 +294,19 @@
       }
     }
 
+    function detachedTooOften() {
+      return detachCount >= MAX_REANCHOR_ATTEMPTS;
+    }
+
     function ensureMounted() {
       if (destroyed) return;
       if (!drawer || !drawer.host.isConnected) buildDrawer();
-      if (!launcher || !launcher.host.isConnected) buildLauncher();
+      if (!launcher || !launcher.host.isConnected) {
+        // Counting only real detachments distinguishes a re-rendering host page
+        // from the ordinary first mount.
+        if (launcher) detachCount += 1;
+        buildLauncher();
+      }
     }
 
     function destroy() {
