@@ -375,3 +375,94 @@ test('numbers colliding filenames deterministically rather than relying on the b
     'Fidelity/Household/2017-12-31_Report.pdf',
   ]);
 });
+
+test('maps a date range onto the tax years it spans, newest first', () => {
+  const { taxYearsInRange } = loadHelpers();
+
+  assert.deepEqual(taxYearsInRange('2022-06-01', '2025-02-01'), ['2025', '2024', '2023', '2022']);
+  assert.deepEqual(taxYearsInRange('2024-01-01', '2024-12-31'), ['2024']);
+});
+
+test('files a single-account tax form under that account using its nickname', () => {
+  const { buildTaxDocument } = loadHelpers();
+
+  const document = buildTaxDocument({
+    docName: 'Consolidated Form 1099',
+    acctDetails: { acctDetail: [{ nickname: 'Taxable Individual', acctNum: 'X10000011', acctType: 'Brokerage' }] },
+    docDetail: { docId: 'tax-1', docType: '7154', docGeneratedDate: 1744606800 },
+  }, '2024');
+
+  assert.equal(document.filename, 'Fidelity/Taxable-Individual-X10000011/2024_Consolidated-Form-1099.pdf');
+  assert.equal(document.metadata.scope, 'account');
+  assert.equal(document.metadata.taxYear, '2024');
+  // The listing's numeric docType identifies the form; the download endpoint
+  // still expects STMT.
+  assert.equal(document.metadata.docType, 'STMT');
+  assert.equal(document.metadata.formCode, '7154');
+});
+
+test('files a tax form covering several accounts outside any account folder', () => {
+  const { buildTaxDocument } = loadHelpers();
+
+  const document = buildTaxDocument({
+    docName: 'Consolidated Form 1099',
+    acctDetails: {
+      acctDetail: [
+        { nickname: 'A', acctNum: '1', acctType: 'Brokerage' },
+        { nickname: 'B', acctNum: '2', acctType: 'Brokerage' },
+      ],
+    },
+    docDetail: { docId: 'tax-2', docGeneratedDate: 1744606800 },
+  }, '2024');
+
+  assert.ok(document.filename.startsWith('Fidelity/Tax-Forms/'));
+  assert.equal(document.metadata.scope, 'tax');
+  assert.equal(document.metadata.acctNum, null);
+});
+
+test('normalizes a single tax form detail object into an array', () => {
+  const { listTaxFormDetails, taxFormAccounts } = loadHelpers();
+
+  assert.equal(listTaxFormDetails({ taxSeason: { taxFormDetails: { taxFormDetail: { docName: 'x' } } } }).length, 1);
+  assert.deepEqual(listTaxFormDetails({}), []);
+  assert.equal(taxFormAccounts({ acctDetails: { acctDetail: { acctNum: '1' } } }).length, 1);
+  assert.deepEqual(taxFormAccounts({}), []);
+});
+
+test('skips tax forms for a season that has not been issued yet', async () => {
+  const provider = loadProvider();
+
+  installFetch(async (url) => {
+    if (url.includes('customer-am-acctnxt')) {
+      return { ok: true, status: 200, json: async () => accountsPayload() };
+    }
+    if (url.includes('taxform')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          taxSeason: {
+            taxFormDetails: {
+              taxFormDetail: [
+                // Listed for the current season but not yet generated.
+                { docName: 'Pending 1099', isDocAvail: false, docDetail: { docId: 'pending' } },
+                { docName: 'Form 5498', isDocAvail: true, docDetail: { docId: 'ready', docGeneratedDate: 1744606800 },
+                  acctDetails: { acctDetail: [{ nickname: 'Roth IRA', acctNum: '100000001', acctType: 'Brokerage' }] } },
+              ],
+            },
+          },
+        }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => listPayload([]) };
+  });
+
+  const documents = await provider.discoverDocuments({
+    startDate: '2024-01-01',
+    endDate: '2024-12-31',
+    docTypes: ['TAX'],
+  });
+
+  assert.equal(documents.length, 1);
+  assert.equal(documents[0].id, 'ready');
+});

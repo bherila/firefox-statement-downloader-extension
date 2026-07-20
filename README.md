@@ -9,7 +9,7 @@ each institution's document page and runs entirely inside your browser.
 | Institution | Documents | Status |
 | --- | --- | --- |
 | Coinbase Pro | Monthly account and fill statements | Supported |
-| Fidelity Investments | Statements, trade confirmations, and account records | Supported |
+| Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax documents | Adapter in live calibration |
 
 Providers deliberately use separate adapters rather than a shared model.

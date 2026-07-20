@@ -14,6 +14,7 @@
   const LIST_URL = `${DOCS_HOST}/ftgw/dp/retail-am-financialdoc/v1/accounts/communications/financial-documents/statements`;
   const DOWNLOAD_URL = `${DOCS_HOST}/ftgw/dp/retail-am-financialdoc/v2/accounts/communications/financial-documents/download`;
   const ACCOUNTS_URL = `${DP_HOST}/ftgw/dp/customer-am-acctnxt/v2/accounts`;
+  const TAX_FORM_URL = `${DP_HOST}/ftgw/dp/retail-am-financialdoc/v1/accounts/communications/financial-documents/taxform`;
 
   // The APIs authenticate on session cookies but reject requests that lack the
   // Document Access Hub application identity headers.
@@ -40,6 +41,15 @@
     { code: 'AR', label: 'Account records' },
     { code: 'AC', label: 'Account records' },
   ];
+
+  // Tax forms come from a separate endpoint keyed by tax year rather than a date
+  // range, so they are requested outside the shared sweep. TAX is this
+  // extension's own code; the API has no equivalent discriminator.
+  const TAX_CODE = 'TAX';
+  const TAX_FOLDER = 'Tax-Forms';
+  // The download endpoint accepts STMT for tax forms too; the numeric docType in
+  // the listing (e.g. 7154) identifies the form, not the API resource.
+  const TAX_DOWNLOAD_DOC_TYPE = 'STMT';
 
   // Householded documents carry no acctNum, and the download endpoint validates
   // acctType against a fixed set; Brokerage is the value the site sends for them.
@@ -226,6 +236,84 @@
     };
   }
 
+  function taxYearsInRange(startDate, endDate) {
+    const first = Number(startDate.slice(0, 4));
+    const last = Number(endDate.slice(0, 4));
+    const years = [];
+    for (let year = last; year >= first; year -= 1) {
+      years.push(String(year));
+    }
+    return years;
+  }
+
+  function listTaxFormDetails(payload) {
+    const detail = payload
+      && payload.taxSeason
+      && payload.taxSeason.taxFormDetails
+      && payload.taxSeason.taxFormDetails.taxFormDetail;
+    if (!detail) return [];
+    return Array.isArray(detail) ? detail : [detail];
+  }
+
+  function taxFormAccounts(form) {
+    const detail = form && form.acctDetails && form.acctDetails.acctDetail;
+    if (!detail) return [];
+    return Array.isArray(detail) ? detail : [detail];
+  }
+
+  function buildTaxDocument(form, taxYear) {
+    const docDetail = form.docDetail || {};
+    const accounts = taxFormAccounts(form);
+    // A tax form can cover several accounts at once, in which case it belongs to
+    // no single account folder.
+    const single = accounts.length === 1 ? accounts[0] : null;
+
+    const folder = single
+      ? sanitizeSegment(`${single.nickname || single.acctNum}-${single.acctNum}`, single.acctNum)
+      : TAX_FOLDER;
+    const label = single ? (single.nickname || single.acctNum) : TAX_FOLDER;
+    const name = sanitizeSegment(form.docName, 'Tax-Form');
+
+    return {
+      id: docDetail.docId,
+      title: `${taxYear} ${form.docName || 'Tax form'}`,
+      category: TAX_CODE,
+      date: toIsoDate(docDetail.docGeneratedDate) || `${taxYear}-12-31`,
+      account: label,
+      // Tax forms have no statement period, so the tax year leads the name.
+      filename: `Fidelity/${folder}/${taxYear}_${name}.pdf`,
+      metadata: {
+        docType: TAX_DOWNLOAD_DOC_TYPE,
+        acctType: single ? (single.acctType || HOUSEHOLD_ACCT_TYPE) : HOUSEHOLD_ACCT_TYPE,
+        acctNum: single ? single.acctNum : null,
+        householdNum: null,
+        isHouseholded: accounts.length > 1,
+        scope: single ? 'account' : 'tax',
+        taxYear,
+        formCode: docDetail.docType || null,
+        rawType: form.docName || null,
+      },
+    };
+  }
+
+  async function discoverTaxForms(startDate, endDate, report, controller) {
+    const documents = [];
+    for (const taxYear of taxYearsInRange(startDate, endDate)) {
+      if (isStopped(controller)) throw cancellationError(controller);
+      notify(report, 'discovery-progress', `Searching tax forms for ${taxYear}…`, { taxYear });
+
+      const payload = await postJson(TAX_FORM_URL, { taxYear }, controller);
+      for (const form of listTaxFormDetails(payload)) {
+        const docId = form && form.docDetail && form.docDetail.docId;
+        // Forms for the current season are listed before they exist; requesting
+        // one that is not yet available fails.
+        if (!docId || form.isDocAvail === false) continue;
+        documents.push(buildTaxDocument(form, taxYear));
+      }
+    }
+    return documents;
+  }
+
   // Distinct documents can share a date and type — a customer may have several
   // "Customer Name Change" records generated the same day. Numbering them here
   // keeps names stable across runs, which the browser's own "(1)" suffixing
@@ -252,9 +340,10 @@
     notify(report, 'discovery-progress', 'Loading Fidelity accounts…');
     const accountIndex = await loadAccountIndex(controller);
 
-    const requested = Array.isArray(options.docTypes) && options.docTypes.length
-      ? DOC_TYPES.filter((entry) => options.docTypes.includes(entry.code))
-      : DOC_TYPES;
+    const selected = Array.isArray(options.docTypes) && options.docTypes.length
+      ? options.docTypes
+      : DOC_TYPES.map((entry) => entry.code).concat(TAX_CODE);
+    const requested = DOC_TYPES.filter((entry) => selected.includes(entry.code));
 
     const documents = [];
     const seen = new Set();
@@ -278,6 +367,14 @@
         if (seen.has(raw.id)) continue;
         seen.add(raw.id);
         documents.push(buildDocument(raw, docType.code, accountIndex));
+      }
+    }
+
+    if (selected.includes(TAX_CODE)) {
+      for (const document of await discoverTaxForms(startDate, endDate, report, controller)) {
+        if (seen.has(document.id)) continue;
+        seen.add(document.id);
+        documents.push(document);
       }
     }
 
@@ -386,13 +483,14 @@
     types.className = 'row';
     const selected = Array.isArray(state.docTypes) && state.docTypes.length
       ? state.docTypes
-      : DOC_TYPES.map((entry) => entry.code);
+      : DOC_TYPES.map((entry) => entry.code).concat(TAX_CODE);
     // AR and AC are both "Account records" to the customer; showing the codes
     // would leak an implementation detail, so they share one checkbox.
     const choices = [
       { codes: ['STMT'], label: 'Statements' },
       { codes: ['TC'], label: 'Trade confirmations' },
       { codes: ['AR', 'AC'], label: 'Account records' },
+      { codes: [TAX_CODE], label: 'Tax forms' },
     ];
     for (const choice of choices) {
       const field = document.createElement('label');
@@ -472,6 +570,10 @@
     buildDocument,
     resolveScope,
     disambiguateFilenames,
+    taxYearsInRange,
+    listTaxFormDetails,
+    taxFormAccounts,
+    buildTaxDocument,
     listDocDetails,
     collectAccounts,
     decodeBase64,
