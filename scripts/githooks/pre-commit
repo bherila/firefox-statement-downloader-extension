@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Installed by setting core.hooksPath to scripts/githooks (see package.json
+# "prepare"). Keeping hooks in the tree means they are reviewed and versioned
+# like any other code, rather than living unversioned in .git/hooks.
+exec "$(git rev-parse --show-toplevel)/scripts/check-personal-data.sh"
