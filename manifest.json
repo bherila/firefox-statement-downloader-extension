@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Coinbase Pro Statement Downloader",
+  "name": "Financial Statement Downloader",
   "version": "1.0.0",
-  "description": "Bulk-downloads historical Coinbase Pro account & fill statement PDFs via the same report-generation API the Statements page uses, instead of clicking through each month by hand.",
+  "description": "Bulk-downloads statements and related financial documents from supported institutions.",
   "background": {
     "scripts": ["background.js"],
     "persistent": true
@@ -24,7 +24,7 @@
   ],
   "browser_specific_settings": {
     "gecko": {
-      "id": "coinbase-pro-statement-downloader@bwh.local",
+      "id": "firefox-statement-downloader-extension@bwh.local",
       "strict_min_version": "78.0"
     }
   }

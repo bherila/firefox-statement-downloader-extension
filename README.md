@@ -1,8 +1,8 @@
-# Coinbase Pro Statement Downloader
+# Financial Statement Downloader for Firefox
 
-A Firefox extension that bulk-downloads historical Coinbase Pro "Account Statement" and
-"Fill Statement" PDFs by calling the same report-generation API the Statements page uses,
-instead of clicking "Load more" and "PDF" one row at a time.
+A Firefox extension for bulk-downloading statements and related financial documents from
+supported institutions. Coinbase Pro is currently supported; Fidelity Investments and
+Wealthfront support is being added through separate institution adapters.
 
 ## How it works
 
