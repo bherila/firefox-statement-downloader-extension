@@ -540,10 +540,15 @@
   }
 
   function findMountPoint() {
-    // Anchor next to the site's own date filter so the button sits with the
-    // controls it complements.
-    return document.querySelector('#options-select-TimeFilter')
-      || document.querySelector('table.pvd-table__table')
+    // Anchor to the section heading rather than the date filter beside it: the
+    // filter row re-renders when a filter changes and takes any injected node
+    // with it, which is how the launcher disappeared on the Wealthfront page.
+    const headings = Array.from(document.querySelectorAll('h1, h2, h3'));
+    const heading = headings.find((element) => (
+      /^(statements|tax forms|trade confirmations|account records)$/i.test((element.textContent || '').trim())
+    ));
+    return heading
+      || document.querySelector('#options-select-TimeFilter')
       || null;
   }
 
