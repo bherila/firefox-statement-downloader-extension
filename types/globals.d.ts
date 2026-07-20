@@ -43,6 +43,7 @@ interface FsdRunBatchInput {
 }
 
 interface Error {
+  blocked?: boolean;
   sessionExpired?: boolean;
   status?: number;
   stopped?: boolean;

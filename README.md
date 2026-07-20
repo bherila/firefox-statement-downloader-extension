@@ -11,7 +11,7 @@ each institution's document page and runs entirely inside your browser.
 | Coinbase Pro | Monthly account and fill statements | Supported |
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax forms | Supported |
-| Fidelity NetBenefits | Workplace/employer plan documents | Planned |
+| Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
@@ -36,6 +36,16 @@ everything in one request. Documents resolve into three scopes: per-account, hou
 all. Householded and per-account documents for the same period are distinct files and are
 both kept. The document center's Employer category is a link off to NetBenefits rather
 than a category it serves, so those documents are not reachable here.
+
+NetBenefits is a generator rather than an archive: no statement exists until one is
+requested for a date range, so the extension asks for periods instead of enumerating
+documents. Retention is ten years minus a day and rolls daily, so anything not generated
+becomes unrecoverable over time. Statements come back as HTML with the balance chart as a
+separate image, which is inlined so each saved file stands alone. Submissions go through
+the page's own form into a hidden iframe, because every legitimate submission on that
+server-rendered app is a navigation and a long run of scripted POSTs is not. Transaction
+history exports as CSV; the QIF alternative silently omits transfers and revenue credits.
+See `docs/netbenefits-calibration.md`.
 
 Wealthfront needs only two authenticated GETs, both of which return the whole corpus with
 no range or page parameter; its documents page paginates in memory, so scraping the table
