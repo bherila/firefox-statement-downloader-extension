@@ -11,8 +11,21 @@ each institution's document page and runs entirely inside your browser.
 | Coinbase Pro | Monthly account and fill statements | Supported |
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax forms | Supported |
+| Fidelity NetBenefits | Workplace/employer plan documents | Planned |
+| Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
+
+Retail Fidelity, NetBenefits, and the credit card are three separate archives, not one.
+The retail document APIs return nothing for workplace or card accounts even though both
+appear in the retail account list, so documents for them have to come from their own
+origins. Anything they hold is absent from what this extension collects.
+
+Institutions discard documents after a retention period, and the period differs by
+document type rather than applying uniformly. Fidelity keeps statements for about ten
+years while serving trade confirmations and account records considerably longer. Anything
+older than the wall is unrecoverable, so an existing archive of old documents is worth
+more than the tool's output for those years: merge into it, never over it.
 
 Fidelity drives the document center's own JSON APIs instead of its DOM. The rendered
 table shows at most ten rows per filter, sorted newest first, with no pagination — so
@@ -21,8 +34,8 @@ links carry no URL to harvest. The listing API accepts an arbitrary date range a
 everything in one request. Documents resolve into three scopes: per-account, householded
 (one document covering several accounts), and customer-level records with no account at
 all. Householded and per-account documents for the same period are distinct files and are
-both kept. Employer documents are out of scope; they live on NetBenefits, a separate
-origin with its own session.
+both kept. The document center's Employer category is a link off to NetBenefits rather
+than a category it serves, so those documents are not reachable here.
 
 Wealthfront needs only two authenticated GETs, both of which return the whole corpus with
 no range or page parameter; its documents page paginates in memory, so scraping the table
