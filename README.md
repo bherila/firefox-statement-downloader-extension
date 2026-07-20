@@ -52,13 +52,15 @@ Use pnpm; do not use `npm ci`.
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm check
+pnpm lint
+pnpm typecheck
 pnpm test
 pnpm build
 ```
 
-The build is written to `dist/firefox-statement-downloader-extension.zip`. CI runs syntax
-checks, unit tests, and the package build for pushes and pull requests.
+The build is written to `dist/firefox-statement-downloader-extension.zip`. CI runs linting,
+type-checking, unit tests, and a verified package build for pull requests and pushes to
+`main`.
 
 Provider documents use the following normalized shape:
 

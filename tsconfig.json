@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "lib": ["ES2022", "DOM"],
+    "noEmit": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "strict": false,
+    "strictNullChecks": false,
+    "target": "ES2022",
+    "types": ["firefox-webext-browser"],
+    "useUnknownInCatchVariables": false
+  },
+  "include": [
+    "background.js",
+    "content.js",
+    "core/**/*.js",
+    "providers/**/*.js",
+    "types/**/*.d.ts"
+  ]
+}
