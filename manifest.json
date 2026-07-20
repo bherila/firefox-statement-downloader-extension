@@ -10,11 +10,9 @@
   "permissions": [
     "https://accounts.coinbase.com/*",
     "https://gdax-reports.s3.amazonaws.com/*",
-    "https://digital.fidelity.com/*",
-    "https://oltx.fidelity.com/*",
-    "https://statements.fidelity.com/*",
+    "https://digitalservices.fidelity.com/*",
+    "https://dpservice.fidelity.com/*",
     "https://www.wealthfront.com/*",
-    "https://dashboard.wealthfront.com/*",
     "webRequest",
     "downloads",
     "storage"
@@ -23,11 +21,8 @@
     {
       "matches": [
         "https://accounts.coinbase.com/statements/pro*",
-        "https://digital.fidelity.com/*",
-        "https://oltx.fidelity.com/*",
-        "https://statements.fidelity.com/*",
-        "https://www.wealthfront.com/*",
-        "https://dashboard.wealthfront.com/*"
+        "https://digitalservices.fidelity.com/navigate/ent-documentcenter/*",
+        "https://www.wealthfront.com/documents*"
       ],
       "js": [
         "core/runtime.js",

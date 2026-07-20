@@ -10,7 +10,7 @@ each institution's document page and runs entirely inside your browser.
 | --- | --- | --- |
 | Coinbase Pro | Monthly account and fill statements | Supported |
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
-| Wealthfront | Statements, trade confirmations, and tax documents | Adapter in live calibration |
+| Wealthfront | Statements, trade confirmations, and tax forms | Supported |
 
 Providers deliberately use separate adapters rather than a shared model.
 
@@ -24,8 +24,13 @@ all. Householded and per-account documents for the same period are distinct file
 both kept. Employer documents are out of scope; they live on NetBenefits, a separate
 origin with its own session.
 
-Wealthfront exposes a paginated all-years table and may prepare a PDF asynchronously after
-it is clicked. Neither is forced through Coinbase's monthly report-generation model.
+Wealthfront needs only two authenticated GETs, both of which return the whole corpus with
+no range or page parameter; its documents page paginates in memory, so scraping the table
+would page through data the extension can request once. Documents are served directly at
+stable URLs, so downloads go straight to the browser. Trade confirmations outnumber
+everything else several times over and are offered but not preselected.
+
+Neither provider is forced through Coinbase's monthly report-generation model.
 
 ## How it works
 

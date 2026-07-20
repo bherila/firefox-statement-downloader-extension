@@ -3,112 +3,214 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
+const runtimePath = require.resolve('../core/runtime.js');
 const providerPath = require.resolve('../providers/wealthfront.js');
 
-function loadHelpers() {
-  global.FinancialStatementDownloader = {};
+function loadProvider() {
+  global.FinancialStatementDownloader = undefined;
+  delete require.cache[runtimePath];
   delete require.cache[providerPath];
+  require(runtimePath);
   require(providerPath);
-  return global.FinancialStatementDownloader.providers.wealthfront.helpers;
+  return global.FinancialStatementDownloader.providers.wealthfront;
+}
+
+function loadHelpers() {
+  return loadProvider().helpers;
+}
+
+function statementsPayload(statements) {
+  return {
+    statements,
+    validAccountsToRequestStatement: [
+      { account_id: 2000001, display_name: 'Individual Investment Account' },
+      { account_id: 2000002, display_name: 'Individual Cash Account' },
+    ],
+  };
+}
+
+function taxPayload() {
+  return {
+    accountIdsToAccountNames: { 2000001: 'Individual Investment Account' },
+    files: {
+      2000001: {
+        documents: {
+          2023: {
+            FORM_1099_PDF: [{ year: '2023', type: 'FORM_1099_PDF', index: 0, docDate: '20240210' }],
+            FORM_1099_XLS: [{ year: '2023', type: 'FORM_1099_XLS', index: 0, docDate: '20240210' }],
+          },
+        },
+      },
+    },
+  };
+}
+
+function installFetch(handler) {
+  global.fetch = handler;
 }
 
 test.afterEach(() => {
+  delete global.fetch;
   delete global.FinancialStatementDownloader;
+  delete require.cache[runtimePath];
   delete require.cache[providerPath];
 });
 
-test('classifies Wealthfront statements, confirmations, and common tax forms', () => {
-  const { classifyCategory } = loadHelpers();
+test('converts the compact YYYYMMDD statement date', () => {
+  const { toIsoDate } = loadHelpers();
 
-  assert.equal(classifyCategory('Monthly Account Statement — December 2025'), 'statements');
-  assert.equal(classifyCategory('Trade Confirmation'), 'trade-confirmations');
-  assert.equal(classifyCategory('Consolidated 1099 Tax Document'), 'tax-documents');
-  assert.equal(classifyCategory('Form 5498'), 'tax-documents');
-  assert.equal(classifyCategory('Account transfer receipt'), null);
+  assert.equal(toIsoDate('20260704'), '2026-07-04');
+  assert.equal(toIsoDate('2026-07-04'), null);
+  assert.equal(toIsoDate(undefined), null);
 });
 
-test('tax classification wins when a tax document also contains statement wording', () => {
-  const { classifyCategory } = loadHelpers();
+test('derives the file extension and label from the tax form type', () => {
+  const { taxFileExtension, taxFormLabel } = loadHelpers();
 
-  assert.equal(classifyCategory('2025 tax statement (1099-DIV)'), 'tax-documents');
+  assert.equal(taxFileExtension('FORM_1099_PDF'), 'pdf');
+  assert.equal(taxFileExtension('FORM_1099_XLS'), 'xls');
+  assert.equal(taxFormLabel('FORM_1099_PDF'), 'Form-1099');
+  // Corrected forms must not collide with the original they replace.
+  assert.equal(taxFormLabel('FORM_1099_CORRECTION_PDF'), 'Form-1099-Correction');
 });
 
-test('stable row signatures ignore whitespace, case, fragments, and tracking parameters', () => {
-  const { stableRowSignature } = loadHelpers();
-  const first = stableRowSignature({
-    category: 'statements',
-    date: '2025-12-31',
-    account: 'Cash Account',
-    title: 'December Statement',
-    href: '/documents/abc.pdf?utm_source=table#download',
-    locatorText: 'Download PDF',
+test('gives confirmations a year level but keeps statements flat', () => {
+  const { buildStatementDocument } = loadHelpers();
+  const names = new Map([['2000001', 'Individual Investment Account']]);
+
+  const statement = buildStatementDocument({ accountId: 2000001, type: 'STATEMENT', date: '20240131', externalId: 'a' }, names);
+  const confirm = buildStatementDocument({ accountId: 2000001, type: 'CONFIRM', date: '20240108', externalId: 'b' }, names);
+
+  assert.equal(statement.filename, 'Wealthfront/Individual-Investment-Account/Statements/2024-01-31_Statement.pdf');
+  // Hundreds of confirmations per account would make a flat folder unusable.
+  assert.equal(confirm.filename, 'Wealthfront/Individual-Investment-Account/Trade-Confirmations/2024/2024-01-08_Trade-Confirmation.pdf');
+});
+
+test('files an unrecognized statement type under Statements rather than dropping it', () => {
+  const { buildStatementDocument } = loadHelpers();
+
+  const document = buildStatementDocument({ accountId: 1, type: 'SOME_NEW_TYPE', date: '20240131', externalId: 'x' }, new Map());
+
+  assert.equal(document.category, 'STATEMENTS');
+  assert.ok(document.filename.includes('/Statements/'));
+});
+
+test('builds tax document URLs from the account, year, type, and index', () => {
+  const { buildTaxDocuments } = loadHelpers();
+  const names = new Map([['2000001', 'Individual Investment Account']]);
+
+  const documents = buildTaxDocuments(taxPayload(), names).sort((a, b) => a.id.localeCompare(b.id));
+
+  assert.equal(documents.length, 2);
+  assert.equal(
+    documents[0].metadata.url,
+    'https://www.wealthfront.com/documents/2000001/2023/FORM_1099_PDF?idx=0'
+  );
+  assert.equal(documents[0].filename, 'Wealthfront/Individual-Investment-Account/Tax-Forms/2023_Form-1099.pdf');
+  assert.equal(documents[1].filename, 'Wealthfront/Individual-Investment-Account/Tax-Forms/2023_Form-1099.xls');
+});
+
+test('excludes trade confirmations unless they are selected', async () => {
+  const provider = loadProvider();
+  installFetch(async (url) => ({
+    ok: true,
+    status: 200,
+    json: async () => (url.includes('tax-forms-data') ? taxPayload() : statementsPayload([
+      { accountId: 2000001, type: 'STATEMENT', date: '20240131', externalId: 's1' },
+      { accountId: 2000001, type: 'CONFIRM', date: '20240108', externalId: 'c1' },
+    ])),
+  }));
+
+  const withoutConfirms = await provider.discoverDocuments({
+    startDate: '2024-01-01', endDate: '2024-12-31', docTypes: ['STATEMENTS'],
   });
-  const second = stableRowSignature({
-    category: ' STATEMENTS ',
-    date: '2025-12-31',
-    account: 'cash   account',
-    title: 'december statement',
-    href: 'https://www.wealthfront.com/documents/abc.pdf',
-    locatorText: ' download   pdf ',
+  const withConfirms = await provider.discoverDocuments({
+    startDate: '2024-01-01', endDate: '2024-12-31', docTypes: ['STATEMENTS', 'CONFIRM'],
   });
 
-  assert.match(first, /^row-[a-f0-9]{8}$/);
-  assert.equal(first, second);
+  assert.deepEqual(withoutConfirms.map((d) => d.id), ['s1']);
+  assert.deepEqual(withConfirms.map((d) => d.id).sort(), ['c1', 's1']);
 });
 
-test('pagination signatures preserve row order and identify repeated pages', () => {
-  const { paginationSignature } = loadHelpers();
+test('does not request tax forms when they are not selected', async () => {
+  const provider = loadProvider();
+  const requested = [];
+  installFetch(async (url) => {
+    requested.push(url);
+    return { ok: true, status: 200, json: async () => statementsPayload([]) };
+  });
 
-  assert.equal(paginationSignature(['row-a', 'row-b']), paginationSignature(['row-a', 'row-b']));
-  assert.notEqual(paginationSignature(['row-a', 'row-b']), paginationSignature(['row-b', 'row-a']));
-  assert.notEqual(paginationSignature(['row-a']), paginationSignature(['row-a', 'row-b']));
-  assert.throws(() => paginationSignature('row-a'), /must be an array/);
+  await provider.discoverDocuments({ startDate: '2024-01-01', endDate: '2024-12-31', docTypes: ['STATEMENTS'] });
+
+  assert.equal(requested.length, 1);
+  assert.ok(!requested[0].includes('tax-forms-data'));
 });
 
-test('builds category-scoped, filesystem-safe PDF filenames', () => {
-  const { buildFilename } = loadHelpers();
+test('filters to the requested range client-side', async () => {
+  const provider = loadProvider();
+  installFetch(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => statementsPayload([
+      { accountId: 2000001, type: 'STATEMENT', date: '20230131', externalId: 'old' },
+      { accountId: 2000001, type: 'STATEMENT', date: '20240131', externalId: 'inside' },
+      { accountId: 2000001, type: 'STATEMENT', date: '20250131', externalId: 'new' },
+    ]),
+  }));
 
-  assert.equal(
-    buildFilename({
-      category: 'trade-confirmations',
-      date: '01/19/2026',
-      account: 'Individual / Brokerage',
-      title: 'AAPL: Buy <Confirmation>.pdf',
-    }),
-    'Wealthfront/trade-confirmations/2026-01-19 - Individual - Brokerage - AAPL- Buy -Confirmation-.pdf'
+  // The API has no range parameter, so the range is applied after fetching.
+  const documents = await provider.discoverDocuments({
+    startDate: '2024-01-01', endDate: '2024-12-31', docTypes: ['STATEMENTS'],
+  });
+
+  assert.deepEqual(documents.map((d) => d.id), ['inside']);
+});
+
+test('returns a direct URL rather than buffering document bytes', async () => {
+  const provider = loadProvider();
+
+  const outcome = await provider.downloadDocument({
+    provider: 'wealthfront',
+    id: 'a',
+    filename: 'Wealthfront/x/Statements/2024-01-31_Statement.pdf',
+    metadata: { url: 'https://www.wealthfront.com/documents/1/document/DOC-A' },
+  });
+
+  assert.equal(outcome.url, 'https://www.wealthfront.com/documents/1/document/DOC-A');
+  assert.equal(outcome.data, undefined);
+});
+
+test('flags an expired session distinctly from a transient failure', async () => {
+  const provider = loadProvider();
+  installFetch(async () => ({ ok: false, status: 401, json: async () => ({}) }));
+
+  await assert.rejects(
+    () => provider.discoverDocuments({ startDate: '2024-01-01', endDate: '2024-12-31' }),
+    (error) => error.status === 401 && error.sessionExpired === true
   );
-  assert.equal(
-    buildFilename({ category: 'tax-documents', date: '2025', title: 'Form 1099-B' }),
-    'Wealthfront/tax-documents/2025 - Form 1099-B.pdf'
-  );
-  assert.equal(
-    buildFilename({ category: 'statements', date: '', title: 'Statement' }),
-    'Wealthfront/statements/undated - Statement.pdf'
-  );
 });
 
-test('normalizes numeric and named Wealthfront dates for filenames', () => {
-  const { normalizeDate } = loadHelpers();
+test('numbers colliding filenames deterministically, preserving the extension', () => {
+  const { disambiguateFilenames } = loadHelpers();
 
-  assert.equal(normalizeDate('Available 2026/7/9'), '2026-07-09');
-  assert.equal(normalizeDate('July 9, 2026'), '2026-07-09');
-  assert.equal(normalizeDate('Tax year 2025'), '2025');
-});
-
-test('selected category defaults include all document types and reject none', () => {
-  const { selectedCategories } = loadHelpers();
-
-  assert.deepEqual(selectedCategories({}), [
-    'statements',
-    'trade-confirmations',
-    'tax-documents',
+  const documents = disambiguateFilenames([
+    { filename: 'Wealthfront/A/Tax-Forms/2023_Form-1099.pdf' },
+    { filename: 'Wealthfront/A/Tax-Forms/2023_Form-1099.pdf' },
+    { filename: 'Wealthfront/A/Tax-Forms/2023_Form-1099.xls' },
   ]);
-  assert.deepEqual(selectedCategories({ wantStatements: false, wantTaxDocuments: false }), [
-    'trade-confirmations',
+
+  assert.deepEqual(documents.map((d) => d.filename), [
+    'Wealthfront/A/Tax-Forms/2023_Form-1099.pdf',
+    'Wealthfront/A/Tax-Forms/2023_Form-1099-2.pdf',
+    'Wealthfront/A/Tax-Forms/2023_Form-1099.xls',
   ]);
-  assert.throws(() => selectedCategories({
-    wantStatements: false,
-    wantTradeConfirmations: false,
-    wantTaxDocuments: false,
-  }), /Select at least one/);
+});
+
+test('only claims the Wealthfront documents page', () => {
+  const provider = loadProvider();
+
+  assert.equal(provider.matches('https://www.wealthfront.com/documents'), true);
+  // dashboard.wealthfront.com does not serve the app and had a mismatched cert.
+  assert.equal(provider.matches('https://dashboard.wealthfront.com/documents'), false);
+  assert.equal(provider.matches('https://www.wealthfront.com/login'), false);
 });
