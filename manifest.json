@@ -16,6 +16,7 @@
     "https://dpservice.fidelity.com/*",
     "https://workplaceservices.fidelity.com/*",
     "https://www.wealthfront.com/*",
+    "https://connect.meritain.com/*",
     "webRequest",
     "downloads",
     "storage"
@@ -26,6 +27,7 @@
         "https://accounts.coinbase.com/statements/pro*",
         "https://digitalservices.fidelity.com/navigate/ent-documentcenter/*",
         "https://www.wealthfront.com/documents*",
+        "https://connect.meritain.com/Member/MemberClaim/ClaimSummary*",
         "https://workplaceservices.fidelity.com/mybenefits/savings2/*"
       ],
       "js": [
@@ -37,6 +39,7 @@
         "providers/fidelity.js",
         "providers/wealthfront.js",
         "providers/netbenefits.js",
+        "providers/meritain.js",
         "content.js"
       ],
       "run_at": "document_idle"

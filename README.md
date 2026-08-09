@@ -12,6 +12,7 @@ each institution's document page and runs entirely inside your browser.
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax forms | Supported |
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
+| Meritain Health | Medical and Rx EOB PDFs | Experimental; live validation pending |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
@@ -52,6 +53,13 @@ no range or page parameter; its documents page paginates in memory, so scraping 
 would page through data the extension can request once. Documents are served directly at
 stable URLs, so downloads go straight to the browser. Trade confirmations outnumber
 everything else several times over and are offered but not preselected.
+
+Meritain's member claims page exposes a paginated claims API with fifteen records per
+request. The provider requests Medical and Rx claims for the selected date range (or all
+available records), confirms each EOB through the member's detail API, and downloads the
+PDF through Meritain's own authenticated document endpoint. Files use the existing
+`Acct.EOB.Meritain/EOB_<claim-number>.pdf` convention so Firefox history and provider
+completion state can skip documents already collected.
 
 Neither provider is forced through Coinbase's monthly report-generation model.
 
