@@ -59,7 +59,10 @@ request. The provider requests Medical and Rx claims for the selected date range
 available records), confirms each EOB through the member's detail API, and downloads the
 PDF through Meritain's own authenticated document endpoint. Files use the existing
 `Acct.EOB.Meritain/EOB_<claim-number>.pdf` convention so Firefox history and provider
-completion state can skip documents already collected.
+completion state can skip documents already collected. If the PDFs were collected outside
+Firefox or its download history has been cleared, **Import existing EOB folder** records the
+matching filenames for the currently signed-in member. The import reads only file names—not
+PDF contents—and the next document search marks matching EOBs as already complete.
 
 Neither provider is forced through Coinbase's monthly report-generation model.
 

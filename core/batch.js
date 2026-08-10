@@ -242,7 +242,7 @@
           if (isStopped(stopController) || (error && error.stopped)) {
             return { stopped: true };
           }
-          if (attempt === attempts || isStopped(stopController)) {
+          if ((error && error.blocked) || attempt === attempts || isStopped(stopController)) {
             break;
           }
           const retryMs = (error && error.status === 429 ? 4 : 1) * retryDelayMs * Math.pow(2, attempt - 1);
@@ -314,6 +314,11 @@
           level: 'error',
           message: `Failed ${document.title}: ${errorMessage(error)}`,
         });
+        if (error && error.blocked) {
+          summary.stopped = true;
+          stopController.stop(errorMessage(error));
+          break;
+        }
       }
 
       if (isStopped(stopController)) {

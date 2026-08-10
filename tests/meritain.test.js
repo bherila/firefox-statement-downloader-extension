@@ -4,9 +4,26 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const runtimePath = require.resolve('../core/runtime.js');
+const storagePath = require.resolve('../core/storage.js');
 const providerPath = require.resolve('../providers/meritain.js');
 
 function installPageContext() {
+  const values = {};
+  global.browser = {
+    storage: {
+      local: {
+        async get(keys) {
+          const requested = Array.isArray(keys) ? keys : [keys];
+          return Object.fromEntries(requested
+            .filter((key) => Object.prototype.hasOwnProperty.call(values, key))
+            .map((key) => [key, values[key]]));
+        },
+        async set(next) {
+          Object.assign(values, next);
+        },
+      },
+    },
+  };
   global.document = {
     querySelector(selector) {
       if (selector === '[name="__RequestVerificationToken"]') return { value: 'synthetic-csrf-token' };
@@ -22,8 +39,10 @@ function loadProvider() {
   global.FinancialStatementDownloader = undefined;
   installPageContext();
   delete require.cache[runtimePath];
+  delete require.cache[storagePath];
   delete require.cache[providerPath];
   require(runtimePath);
+  require(storagePath);
   require(providerPath);
   return global.FinancialStatementDownloader.providers.meritain;
 }
@@ -60,8 +79,10 @@ test.afterEach(() => {
   delete global.fetch;
   delete global.document;
   delete global.location;
+  delete global.browser;
   delete global.FinancialStatementDownloader;
   delete require.cache[runtimePath];
+  delete require.cache[storagePath];
   delete require.cache[providerPath];
 });
 
@@ -93,9 +114,9 @@ test('normalizes dates and preserves the existing EOB filename convention', () =
     ClaimNumber: 'CLAIM-1',
     ClaimType: 'Rx',
     ServiceFromDate: '01/09/2024',
-  }, { depNo: '0' });
+  }, { groupId: '100000001', memberId: '2000001', depNo: '0' });
 
-  assert.equal(document.id, 'Rx:CLAIM-1:0');
+  assert.equal(document.id, '100000001:2000001:0:Rx:CLAIM-1');
   assert.equal(document.title, 'Rx EOB (2024-01-09)');
   assert.equal(document.filename, 'Acct.EOB.Meritain/EOB_CLAIM-1.pdf');
   assert.equal(document.metadata.claimType, 'Rx');
@@ -104,6 +125,7 @@ test('normalizes dates and preserves the existing EOB filename convention', () =
 test('paginates until the server-reported total and filters selected types', async () => {
   const provider = loadProvider();
   const requests = [];
+  const waits = [];
   const rows = Array.from({ length: 16 }, (_, index) => ({
     ClaimNumber: `CLAIM-${index + 1}`,
     ClaimType: index === 15 ? 'Rx' : 'Medical',
@@ -124,6 +146,9 @@ test('paginates until the server-reported total and filters selected types', asy
     startDate: '2024-01-01',
     endDate: '2024-12-31',
     docTypes: ['Medical'],
+    paginationDelayMs: 100,
+    jitterRatio: 0,
+    sleep: async (milliseconds) => waits.push(milliseconds),
   });
 
   assert.equal(documents.length, 15);
@@ -131,6 +156,105 @@ test('paginates until the server-reported total and filters selected types', asy
   assert.equal(summaryRequests.length, 2);
   assert.equal(new URLSearchParams(summaryRequests[1].init.body).get('RecordSetInformation[RecordSetStartingRecord]'), '15');
   assert.equal(new URLSearchParams(summaryRequests[0].init.body).get('ServiceFromDate'), '01/01/2024');
+  assert.deepEqual(waits, [100]);
+});
+
+test('rejects a short claims page that disagrees with the reported total', async () => {
+  const provider = loadProvider();
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    ClaimNumber: `CLAIM-${index + 1}`,
+    ClaimType: 'Medical',
+    ServiceFromDate: '01/09/2024',
+  }));
+  installFetch(async (url) => {
+    if (url.endsWith('/Account/GetToken')) return tokenResponse();
+    if (url.endsWith('/api/claims/summary')) return serializedResponse(summaryPayload(rows, 40));
+    throw new Error(`unexpected URL ${url}`);
+  });
+
+  await assert.rejects(
+    provider.discoverDocuments({ all: true, docTypes: ['Medical'], paginationDelayMs: 0 }),
+    /incomplete claims page \(10 of 40 records\)/,
+  );
+});
+
+test('reserves generated filenames when disambiguating collisions', () => {
+  const { disambiguateFilenames } = loadProvider().helpers;
+  const documents = [
+    { filename: 'Acct.EOB.Meritain/EOB_CLAIM.pdf' },
+    { filename: 'Acct.EOB.Meritain/EOB_CLAIM.pdf' },
+    { filename: 'Acct.EOB.Meritain/EOB_CLAIM-2.pdf' },
+  ];
+
+  assert.deepEqual(
+    disambiguateFilenames(documents).map((document) => document.filename),
+    [
+      'Acct.EOB.Meritain/EOB_CLAIM.pdf',
+      'Acct.EOB.Meritain/EOB_CLAIM-3.pdf',
+      'Acct.EOB.Meritain/EOB_CLAIM-2.pdf',
+    ],
+  );
+});
+
+test('imports existing EOB filenames and seeds matching completion state', async () => {
+  const provider = loadProvider();
+  const result = await provider.helpers.importExistingFiles([
+    { name: 'EOB_CLAIM-1.pdf' },
+    { name: 'notes.txt' },
+    { name: 'EOB_CLAIM-1.pdf' },
+  ]);
+  assert.deepEqual(result, { selected: 3, recognized: 1, added: 1, total: 1, ignored: 1 });
+
+  installFetch(async (url) => {
+    if (url.endsWith('/Account/GetToken')) return tokenResponse();
+    if (url.endsWith('/api/claims/summary')) {
+      return serializedResponse(summaryPayload([{
+        ClaimNumber: 'CLAIM-1',
+        ClaimType: 'Medical',
+        ServiceFromDate: '01/09/2024',
+      }]));
+    }
+    throw new Error(`unexpected URL ${url}`);
+  });
+  const [document] = await provider.discoverDocuments({
+    all: true,
+    docTypes: ['Medical'],
+    paginationDelayMs: 0,
+  });
+
+  const providerStorage = global.FinancialStatementDownloader.createProviderStorage('meritain');
+  assert.equal(await providerStorage.isDone(document), true);
+
+  global.document.scripts[0].textContent = 'var apiMemberParameters = {"MemberId":"EXAMPLE MEMBER","GroupId":"EXAMPLE GROUP","DepNo":0};';
+  const [otherMemberDocument] = await provider.discoverDocuments({
+    all: true,
+    docTypes: ['Medical'],
+    paginationDelayMs: 0,
+  });
+  assert.notEqual(otherMemberDocument.id, document.id);
+  assert.equal(await providerStorage.isDone(otherMemberDocument), false);
+});
+
+test('treats a forbidden response as terminal without refreshing or retrying', async () => {
+  const provider = loadProvider();
+  const requests = [];
+  installFetch(async (url) => {
+    requests.push(url);
+    if (url.endsWith('/Account/GetToken')) return tokenResponse();
+    if (url.endsWith('/api/claims/details')) return { ok: false, status: 403 };
+    throw new Error(`unexpected URL ${url}`);
+  });
+
+  await assert.rejects(
+    provider.downloadDocument({
+      title: 'Medical EOB (2024-01-09)',
+      filename: 'Acct.EOB.Meritain/EOB_CLAIM-1.pdf',
+      metadata: { claimNumber: 'CLAIM-1', claimType: 'Medical', depNo: '0' },
+    }),
+    (error) => error.status === 403 && error.blocked === true && error.sessionExpired === false,
+  );
+  assert.equal(requests.filter((url) => url.endsWith('/Account/GetToken')).length, 1);
+  assert.equal(requests.filter((url) => url.endsWith('/api/claims/details')).length, 1);
 });
 
 test('uses the page token and downloads a PDF through the Meritain API contract', async () => {

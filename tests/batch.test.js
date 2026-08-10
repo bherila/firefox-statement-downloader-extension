@@ -84,8 +84,10 @@ test('provider storage is isolated, tracks done documents, and migrates only exp
 
   await fidelity.saveSettings({ year: 2025 });
   await fidelity.markDone('fidelity-1');
+  assert.equal(await fidelity.markDoneMany(['fidelity-1', 'fidelity-2']), 1);
   assert.deepEqual(plain(await fidelity.loadSettings()), { year: 2025 });
   assert.equal(await fidelity.isDone('fidelity-1'), true);
+  assert.equal(await fidelity.isDone('fidelity-2'), true);
   await fidelity.clearDone();
   assert.equal(await fidelity.isDone('fidelity-1'), false);
 });
@@ -164,6 +166,37 @@ test('batch retries failures, continues to later documents, and accepts download
   assert.ok(events.includes('download-retry'));
   assert.ok(events.includes('download-failed'));
   assert.ok(events.includes('batch-complete'));
+});
+
+test('batch does not retry a terminal refusal and stops before later documents', async () => {
+  const fake = createBrowser();
+  const FSD = loadCore(fake);
+  const calls = [];
+  const events = [];
+  const provider = {
+    id: 'meritain',
+    async discoverDocuments() {
+      return [doc('blocked'), doc('later')];
+    },
+    async downloadDocument(document) {
+      calls.push(document.id);
+      const error = new Error('request refused');
+      error.blocked = true;
+      throw error;
+    },
+  };
+
+  const summary = await FSD.runBatch({
+    provider,
+    options: { attempts: 3, delayMs: 0, retryDelayMs: 0 },
+    report: (event) => events.push(event.type),
+  });
+
+  assert.deepEqual(calls, ['blocked']);
+  assert.equal(summary.attempted, 1);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.stopped, true);
+  assert.equal(events.includes('download-retry'), false);
 });
 
 test('stop controller ends the batch after the active document', async () => {

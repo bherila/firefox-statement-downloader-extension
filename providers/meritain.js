@@ -11,6 +11,9 @@
   const DETAILS_URL = `${ORIGIN}/api/claims/details`;
   const DOWNLOAD_URL = `${ORIGIN}/Claim/DownloadDocument`;
   const PAGE_SIZE = 15;
+  const DEFAULT_PAGE_DELAY_MS = 1500;
+  const DEFAULT_JITTER_RATIO = 0.6;
+  const EOB_FILENAME_PATTERN = /^EOB_[^/\\]+\.pdf$/i;
   const CLAIM_TYPES = [
     { code: 'Medical', label: 'Medical EOBs' },
     { code: 'Rx', label: 'Rx EOBs' },
@@ -124,6 +127,14 @@
     accessTokenExpiresAt = 0;
   }
 
+  function requestError(message, status) {
+    const error = new Error(`${message} (${status})`);
+    error.status = status;
+    error.sessionExpired = status === 401;
+    error.blocked = status === 403;
+    return error;
+  }
+
   async function getAccessToken(force = false) {
     if (!force && accessToken && Date.now() < accessTokenExpiresAt) {
       return accessToken;
@@ -140,10 +151,7 @@
       },
     });
     if (!response.ok) {
-      const error = new Error(`Meritain token request failed (${response.status})`);
-      error.status = response.status;
-      error.sessionExpired = response.status === 401 || response.status === 403;
-      throw error;
+      throw requestError('Meritain token request failed', response.status);
     }
     const payload = await response.json();
     if (!payload || typeof payload.token !== 'string' || payload.token.trim() === '') {
@@ -185,15 +193,12 @@
         headers,
         body,
       });
-      if (response.status === 401 || response.status === 403) {
+      if (response.status === 401) {
         clearAccessToken();
         if (attempt === 0) continue;
       }
       if (!response.ok) {
-        const error = new Error(`Meritain request failed (${response.status})`);
-        error.status = response.status;
-        error.sessionExpired = response.status === 401 || response.status === 403;
-        throw error;
+        throw requestError('Meritain request failed', response.status);
       }
       if (responseType === 'bytes') {
         return new Uint8Array(await response.arrayBuffer());
@@ -233,8 +238,9 @@
     if (!claimNumber || !claimType) return null;
     const date = toIsoDate(raw.ServiceFromDate);
     const safeClaimNumber = sanitizeSegment(claimNumber, 'unknown-claim');
+    const memberScope = memberStorageKey(context);
     return {
-      id: `${claimType}:${claimNumber}:${context.depNo}`,
+      id: `${memberScope}:${encodeURIComponent(claimType)}:${encodeURIComponent(claimNumber)}`,
       title: `${claimType} EOB${date ? ` (${date})` : ''}`,
       category: 'EOB',
       date,
@@ -249,14 +255,23 @@
   }
 
   function disambiguateFilenames(documents) {
-    const counts = new Map();
+    const reserved = new Set(documents.map((document) => document.filename));
+    const assigned = new Set();
     return documents.map((document) => {
-      const count = counts.get(document.filename) || 0;
-      counts.set(document.filename, count + 1);
-      if (count === 0) return document;
+      if (!assigned.has(document.filename)) {
+        assigned.add(document.filename);
+        return document;
+      }
+      let suffix = 2;
+      let filename;
+      do {
+        filename = document.filename.replace(/\.pdf$/, `-${suffix}.pdf`);
+        suffix += 1;
+      } while (reserved.has(filename) || assigned.has(filename));
+      assigned.add(filename);
       return {
         ...document,
-        filename: document.filename.replace(/\.pdf$/, `-${count + 1}.pdf`),
+        filename,
       };
     });
   }
@@ -265,9 +280,87 @@
     return app.createProviderStorage(PROVIDER_ID);
   }
 
+  function memberStorageKey(context) {
+    return [context.groupId, context.memberId, context.depNo]
+      .map((value) => encodeURIComponent(String(value)))
+      .join(':');
+  }
+
+  function filenameKey(value) {
+    return String(value || '').split(/[\\/]/).pop().toLowerCase();
+  }
+
+  function collectExistingFilenames(files) {
+    const selected = Array.from(files || []);
+    const filenames = new Set();
+    let matching = 0;
+    selected.forEach((file) => {
+      const name = String(file && file.name ? file.name : '').trim();
+      if (EOB_FILENAME_PATTERN.test(name)) {
+        matching += 1;
+        filenames.add(filenameKey(name));
+      }
+    });
+    return { selected: selected.length, matching, filenames };
+  }
+
+  async function loadImportedFilenames(context) {
+    const state = await storage().loadState() || {};
+    const byMember = state.importedFilenamesByMember;
+    const stored = byMember && Array.isArray(byMember[memberStorageKey(context)])
+      ? byMember[memberStorageKey(context)]
+      : [];
+    return new Set(stored.map(filenameKey).filter(Boolean));
+  }
+
+  async function importExistingFiles(files) {
+    const context = readMemberContext();
+    const { selected, matching, filenames } = collectExistingFilenames(files);
+    if (selected === 0) throw new Error('Choose a folder containing existing EOB PDFs');
+    if (filenames.size === 0) throw new Error('No files named EOB_*.pdf were found in that folder');
+
+    const providerStorage = storage();
+    const state = await providerStorage.loadState() || {};
+    const byMember = state.importedFilenamesByMember
+      && typeof state.importedFilenamesByMember === 'object'
+      && !Array.isArray(state.importedFilenamesByMember)
+      ? { ...state.importedFilenamesByMember }
+      : {};
+    const key = memberStorageKey(context);
+    const existing = new Set((Array.isArray(byMember[key]) ? byMember[key] : []).map(filenameKey));
+    const before = existing.size;
+    filenames.forEach((filename) => existing.add(filename));
+    byMember[key] = [...existing].sort();
+    await providerStorage.saveState({ ...state, importedFilenamesByMember: byMember });
+    return {
+      selected,
+      recognized: filenames.size,
+      added: existing.size - before,
+      total: existing.size,
+      ignored: selected - matching,
+    };
+  }
+
+  async function seedImportedCompletions(documents, context, report) {
+    const imported = await loadImportedFilenames(context);
+    if (imported.size === 0) return 0;
+    const matches = documents.filter((document) => imported.has(filenameKey(document.filename)));
+    await storage().markDoneMany(matches);
+    if (matches.length > 0) {
+      notify(report, 'discovery-progress', `Matched ${matches.length} EOB${matches.length === 1 ? '' : 's'} from the imported archive.`, {
+        count: matches.length,
+      });
+    }
+    return matches.length;
+  }
+
   async function loadState() {
-    const settings = await storage().loadSettings();
-    return settings || {};
+    const context = readMemberContext();
+    const [settings, imported] = await Promise.all([
+      storage().loadSettings(),
+      loadImportedFilenames(context),
+    ]);
+    return { ...(settings || {}), importedCount: imported.size };
   }
 
   function renderControls(container, state = {}) {
@@ -318,9 +411,43 @@
     });
     container.appendChild(types);
 
+    const archive = document.createElement('div');
+    archive.className = 'row';
+    const importButton = document.createElement('button');
+    importButton.type = 'button';
+    importButton.textContent = 'Import existing EOB folder';
+    const archiveInput = document.createElement('input');
+    archiveInput.type = 'file';
+    archiveInput.multiple = true;
+    archiveInput.accept = '.pdf,application/pdf';
+    archiveInput.setAttribute('webkitdirectory', '');
+    archiveInput.hidden = true;
+    const archiveStatus = document.createElement('span');
+    archiveStatus.textContent = state.importedCount
+      ? `${state.importedCount} existing EOB filename${state.importedCount === 1 ? '' : 's'} imported for this member.`
+      : 'No existing EOB folder imported for this member.';
+    importButton.addEventListener('click', () => archiveInput.click());
+    archiveInput.addEventListener('change', async () => {
+      importButton.disabled = true;
+      archiveStatus.textContent = 'Importing existing EOB filenames…';
+      try {
+        const result = await importExistingFiles(archiveInput.files);
+        archiveStatus.textContent = `${result.total} existing EOB filename${result.total === 1 ? '' : 's'} ready to match; ${result.added} newly imported.`;
+      } catch (error) {
+        archiveStatus.textContent = `Import failed: ${error.message || error}`;
+      } finally {
+        archiveInput.value = '';
+        importButton.disabled = false;
+      }
+    });
+    archive.appendChild(importButton);
+    archive.appendChild(archiveInput);
+    archive.appendChild(archiveStatus);
+    container.appendChild(archive);
+
     const note = document.createElement('div');
     note.className = 'fsd-provider-status';
-    note.textContent = 'Uses Meritain’s claims API and saves PDFs under Acct.EOB.Meritain.';
+    note.textContent = 'Uses Meritain’s claims API and saves PDFs under Acct.EOB.Meritain. Folder import reads filenames only; it does not read or upload PDF contents.';
     container.appendChild(note);
   }
 
@@ -340,7 +467,45 @@
 
     const settings = { all, startDate, endDate, docTypes };
     await storage().saveSettings(settings);
-    return { ...settings, delayMs: 1500, jitterRatio: 0.6, attempts: 2 };
+    return {
+      ...settings,
+      delayMs: 1500,
+      paginationDelayMs: DEFAULT_PAGE_DELAY_MS,
+      jitterRatio: DEFAULT_JITTER_RATIO,
+      attempts: 2,
+    };
+  }
+
+  function reportedTotal(payload) {
+    if (!payload || typeof payload !== 'object') return null;
+    for (const value of [payload.TotalDisplayRecords, payload.TotalRecords]) {
+      if (value === null || value === undefined || value === '') continue;
+      const parsed = Number(value);
+      if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    }
+    return null;
+  }
+
+  async function pauseBetweenPages(options, controller) {
+    const delayMs = options.paginationDelayMs === undefined
+      ? DEFAULT_PAGE_DELAY_MS
+      : options.paginationDelayMs;
+    const jitterRatio = options.jitterRatio === undefined ? DEFAULT_JITTER_RATIO : options.jitterRatio;
+    const random = options.random || Math.random;
+    const sleep = options.sleep || app.sleep || ((milliseconds) => new Promise((resolve) => root.setTimeout(resolve, milliseconds)));
+    if (!Number.isFinite(delayMs) || delayMs < 0) throw new RangeError('paginationDelayMs must be a non-negative number');
+    if (!Number.isFinite(jitterRatio) || jitterRatio < 0 || jitterRatio > 2) {
+      throw new RangeError('jitterRatio must be between 0 and 2');
+    }
+    if (typeof random !== 'function' || typeof sleep !== 'function') {
+      throw new TypeError('pagination random and sleep options must be functions');
+    }
+    const spread = delayMs * jitterRatio;
+    const jittered = jitterRatio === 0
+      ? delayMs
+      : Math.max(0, Math.round(delayMs - spread / 2 + random() * spread));
+    if (jittered > 0) await sleep(jittered);
+    if (isStopped(controller)) throw cancellationError(controller);
   }
 
   async function discoverDocuments(options = {}, report, controller) {
@@ -369,8 +534,11 @@
       });
       const payload = await postForm(SUMMARY_URL, buildSummaryFields(context, requestOptions, startingRecord), controller);
       const rows = Array.isArray(payload && payload.Data) ? payload.Data : [];
-      const reportedTotal = Number(payload && (payload.TotalRecords || payload.TotalDisplayRecords));
-      if (Number.isFinite(reportedTotal)) totalRecords = reportedTotal;
+      const pageTotal = reportedTotal(payload);
+      if (pageTotal !== null) totalRecords = pageTotal;
+      if (totalRecords !== null && startingRecord + rows.length > totalRecords) {
+        throw new Error(`Meritain returned more claims than its reported total (${startingRecord + rows.length} of ${totalRecords} records)`);
+      }
       rows.forEach((raw) => {
         if (!raw || !docTypes.includes(raw.ClaimType)) return;
         const document = buildDocument(raw, context);
@@ -379,13 +547,20 @@
         seen.add(document.id);
         documents.push(document);
       });
+      const consumed = startingRecord + rows.length;
+      if (totalRecords !== null && consumed < totalRecords && rows.length < PAGE_SIZE) {
+        throw new Error(`Meritain returned an incomplete claims page (${consumed} of ${totalRecords} records)`);
+      }
+      if ((totalRecords !== null && consumed >= totalRecords) || (totalRecords === null && rows.length < PAGE_SIZE)) break;
       startingRecord += PAGE_SIZE;
-      if (rows.length === 0 || rows.length < PAGE_SIZE || (totalRecords !== null && startingRecord >= totalRecords)) break;
+      await pauseBetweenPages(requestOptions, controller);
     } while (!isStopped(controller));
 
     if (isStopped(controller)) throw cancellationError(controller);
+    const result = disambiguateFilenames(documents);
+    await seedImportedCompletions(result, context, report);
     notify(report, 'discovery-progress', `Meritain returned ${documents.length} EOB candidates.`, { count: documents.length });
-    return disambiguateFilenames(documents);
+    return result;
   }
 
   function detailIsAvailable(payload) {
@@ -474,9 +649,13 @@
     assertDateString,
     buildDocument,
     buildSummaryFields,
+    collectExistingFilenames,
     detailIsAvailable,
     disambiguateFilenames,
+    importExistingFiles,
+    memberStorageKey,
     parseSerializedJson,
+    reportedTotal,
     sanitizeSegment,
     toIsoDate,
     toUsDate,
