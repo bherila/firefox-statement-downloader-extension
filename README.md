@@ -12,7 +12,7 @@ each institution's document page and runs entirely inside your browser.
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax forms | Supported |
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
-| Meritain Health | Medical and Rx EOB PDFs | Experimental; live validation pending |
+| Meritain Health | Medical and Rx EOB PDFs | Supported |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
