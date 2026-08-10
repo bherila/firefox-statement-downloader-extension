@@ -13,6 +13,8 @@
   const PAGE_SIZE = 15;
   const DEFAULT_PAGE_DELAY_MS = 1500;
   const DEFAULT_JITTER_RATIO = 0.6;
+  const MAX_TOKEN_CACHE_MS = 4 * 60 * 1000;
+  const TOKEN_REFRESH_LEAD_SECONDS = 60;
   const EOB_FILENAME_PATTERN = /^EOB_[^/\\]+\.pdf$/i;
   const CLAIM_TYPES = [
     { code: 'Medical', label: 'Medical EOBs' },
@@ -135,6 +137,13 @@
     return error;
   }
 
+  function tokenCacheDurationMs(expiration) {
+    const lifetimeSeconds = Number(expiration);
+    if (!Number.isFinite(lifetimeSeconds) || lifetimeSeconds <= 0) return MAX_TOKEN_CACHE_MS;
+    const refreshSeconds = Math.max(5, lifetimeSeconds - TOKEN_REFRESH_LEAD_SECONDS);
+    return Math.min(MAX_TOKEN_CACHE_MS, refreshSeconds * 1000);
+  }
+
   async function getAccessToken(force = false) {
     if (!force && accessToken && Date.now() < accessTokenExpiresAt) {
       return accessToken;
@@ -157,9 +166,11 @@
     if (!payload || typeof payload.token !== 'string' || payload.token.trim() === '') {
       throw new Error('Meritain did not return an API token');
     }
-    const lifetimeSeconds = Number(payload.expiration);
     accessToken = payload.token;
-    accessTokenExpiresAt = Date.now() + Math.max(30, (Number.isFinite(lifetimeSeconds) ? lifetimeSeconds : 300) - 60) * 1000;
+    // The bearer requests may not count as activity for Meritain's page session.
+    // Revisit its normal token endpoint at least every four minutes while work is
+    // active so long batches get a conservative, first-party session touch.
+    accessTokenExpiresAt = Date.now() + tokenCacheDurationMs(payload.expiration);
     return accessToken;
   }
 
@@ -657,6 +668,7 @@
     parseSerializedJson,
     reportedTotal,
     sanitizeSegment,
+    tokenCacheDurationMs,
     toIsoDate,
     toUsDate,
     CLAIM_STATUSES,

@@ -100,14 +100,17 @@
       let message = typeof event === 'string' ? event : event && event.message;
       if (!message && event) {
         const name = event.document && event.document.title;
+        const progress = Number.isInteger(event.current) && Number.isInteger(event.total)
+          ? `File ${event.current} of ${event.total}: `
+          : '';
         const messages = {
           'discovery-start': 'Discovering available documents…',
           'discovery-complete': `Found ${event.count} document(s).`,
-          'document-skipped': `Skipped ${name} (already downloaded).`,
-          'download-start': `Downloading ${name}…`,
-          'download-complete': `Downloaded ${name}.`,
-          'download-retry': `Retrying ${name} after ${event.error} (${event.attempt}/${event.attempts})…`,
-          'download-failed': `Failed ${name}: ${event.error}`,
+          'document-skipped': `${progress}Skipped ${name} (already downloaded).`,
+          'download-start': `${progress}Downloading ${name}…`,
+          'download-complete': `${progress}Downloaded ${name}.`,
+          'download-retry': `${progress}Retrying ${name} after ${event.error} (${event.attempt}/${event.attempts})…`,
+          'download-failed': `${progress}Failed ${name}: ${event.error}`,
           'history-check-failed': `Could not check download history for ${name}: ${event.error}`,
         };
         message = messages[event.type];

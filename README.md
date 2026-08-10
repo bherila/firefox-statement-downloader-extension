@@ -63,6 +63,9 @@ completion state can skip documents already collected. If the PDFs were collecte
 Firefox or its download history has been cleared, **Import existing EOB folder** records the
 matching filenames for the currently signed-in member. The import reads only file names—not
 PDF contents—and the next document search marks matching EOBs as already complete.
+During an active run, the provider refreshes Meritain's normal API token at least every
+four minutes as a best-effort session keepalive. Server-enforced absolute timeouts and
+explicit refusals are still terminal; the extension does not retry through them.
 
 Neither provider is forced through Coinbase's monthly report-generation model.
 
@@ -81,6 +84,7 @@ would be fetched, grouped by the folder each file lands in; downloading is only 
 once that preview exists, and any change to the controls invalidates it. Requests are
 spaced with a randomized delay so the cadence is not a fixed signature, and completed
 document IDs are recorded so an interrupted run resumes instead of restarting.
+Per-file progress reports show the current file, total files, and how many remain.
 
 Each provider owns its page detection, document discovery, pagination, authenticated
 download behavior, and filenames under `providers/`.

@@ -103,6 +103,15 @@ test('builds Meritain form fields with repeated claim types and 15-record pages'
   assert.equal(fields.ServiceToDate, '12/31/2024');
 });
 
+test('caps token caching so active runs touch the normal session endpoint periodically', () => {
+  const { tokenCacheDurationMs } = loadProvider().helpers;
+
+  assert.equal(tokenCacheDurationMs(300), 4 * 60 * 1000);
+  assert.equal(tokenCacheDurationMs(3600), 4 * 60 * 1000);
+  assert.equal(tokenCacheDurationMs(90), 30 * 1000);
+  assert.equal(tokenCacheDurationMs('not-a-duration'), 4 * 60 * 1000);
+});
+
 test('normalizes dates and preserves the existing EOB filename convention', () => {
   const { buildDocument, toIsoDate } = loadProvider().helpers;
 
