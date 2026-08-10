@@ -12,6 +12,7 @@ each institution's document page and runs entirely inside your browser.
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax forms | Supported |
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
+| Meritain Health | Medical and Rx EOB PDFs | Supported |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
@@ -53,6 +54,19 @@ would page through data the extension can request once. Documents are served dir
 stable URLs, so downloads go straight to the browser. Trade confirmations outnumber
 everything else several times over and are offered but not preselected.
 
+Meritain's member claims page exposes a paginated claims API with fifteen records per
+request. The provider requests Medical and Rx claims for the selected date range (or all
+available records), confirms each EOB through the member's detail API, and downloads the
+PDF through Meritain's own authenticated document endpoint. Files use the existing
+`Acct.EOB.Meritain/EOB_<claim-number>.pdf` convention so Firefox history and provider
+completion state can skip documents already collected. If the PDFs were collected outside
+Firefox or its download history has been cleared, **Import existing EOB folder** records the
+matching filenames for the currently signed-in member. The import reads only file names—not
+PDF contents—and the next document search marks matching EOBs as already complete.
+During an active run, the provider refreshes Meritain's normal API token at least every
+four minutes as a best-effort session keepalive. Server-enforced absolute timeouts and
+explicit refusals are still terminal; the extension does not retry through them.
+
 Neither provider is forced through Coinbase's monthly report-generation model.
 
 ## How it works
@@ -70,6 +84,7 @@ would be fetched, grouped by the folder each file lands in; downloading is only 
 once that preview exists, and any change to the controls invalidates it. Requests are
 spaced with a randomized delay so the cadence is not a fixed signature, and completed
 document IDs are recorded so an interrupted run resumes instead of restarting.
+Per-file progress reports show the current file, total files, and how many remain.
 
 Each provider owns its page detection, document discovery, pagination, authenticated
 download behavior, and filenames under `providers/`.

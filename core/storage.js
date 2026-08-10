@@ -77,6 +77,20 @@
         done[docId] = true;
         await save('done', done);
       },
+      async markDoneMany(documentsOrIds) {
+        if (!Array.isArray(documentsOrIds)) {
+          throw new TypeError('documentsOrIds must be an array');
+        }
+        const done = await loadDoneObject();
+        let added = 0;
+        for (const documentOrId of documentsOrIds) {
+          const docId = documentId(documentOrId);
+          if (!Object.prototype.hasOwnProperty.call(done, docId)) added += 1;
+          done[docId] = true;
+        }
+        if (documentsOrIds.length > 0) await save('done', done);
+        return added;
+      },
       async clearDone() {
         await save('done', {});
       },

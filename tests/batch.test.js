@@ -84,8 +84,10 @@ test('provider storage is isolated, tracks done documents, and migrates only exp
 
   await fidelity.saveSettings({ year: 2025 });
   await fidelity.markDone('fidelity-1');
+  assert.equal(await fidelity.markDoneMany(['fidelity-1', 'fidelity-2']), 1);
   assert.deepEqual(plain(await fidelity.loadSettings()), { year: 2025 });
   assert.equal(await fidelity.isDone('fidelity-1'), true);
+  assert.equal(await fidelity.isDone('fidelity-2'), true);
   await fidelity.clearDone();
   assert.equal(await fidelity.isDone('fidelity-1'), false);
 });
@@ -96,6 +98,7 @@ test('batch skips provider-completed and Firefox-history documents and downloads
   const storage = FSD.createProviderStorage('fidelity');
   await storage.markDone('complete');
   const downloadedByProvider = [];
+  const events = [];
   const provider = {
     id: 'fidelity',
     async discoverDocuments(options, report) {
@@ -112,6 +115,7 @@ test('batch skips provider-completed and Firefox-history documents and downloads
   const summary = await FSD.runBatch({
     provider,
     options: { year: 2025, delayMs: 0, retryDelayMs: 0 },
+    report: (event) => events.push(event),
   });
 
   assert.deepEqual(plain(summary), {
@@ -129,6 +133,16 @@ test('batch skips provider-completed and Firefox-history documents and downloads
     [{ action: 'download', url: 'https://example.test/new', filename: 'Fidelity/new.pdf' }],
   );
   assert.equal(await storage.isDone('new'), true);
+  const skipped = events.filter((event) => event.type === 'document-skipped');
+  assert.deepEqual(skipped.map((event) => [event.current, event.total, event.remaining]), [
+    [1, 3, 2],
+    [2, 3, 1],
+  ]);
+  const started = events.find((event) => event.type === 'download-start');
+  const completed = events.find((event) => event.type === 'download-complete');
+  assert.match(started.message, /^File 3 of 3: Downloading/);
+  assert.match(completed.message, /^File 3 of 3: Downloaded/);
+  assert.equal(completed.remaining, 0);
 });
 
 test('batch retries failures, continues to later documents, and accepts downloaded outcomes', async () => {
@@ -153,7 +167,7 @@ test('batch retries failures, continues to later documents, and accepts download
   const summary = await FSD.runBatch({
     provider,
     options: { attempts: 2, delayMs: 0, retryDelayMs: 0 },
-    report: (event) => events.push(event.type),
+    report: (event) => events.push(event),
   });
 
   assert.deepEqual(calls, ['broken', 'broken', 'working']);
@@ -161,9 +175,43 @@ test('batch retries failures, continues to later documents, and accepts download
   assert.equal(summary.downloaded, 1);
   assert.deepEqual(plain(summary.failures), [{ id: 'broken', error: 'overlay never cleared' }]);
   assert.equal(fake.messages.some((message) => message.action === 'download'), false);
-  assert.ok(events.includes('download-retry'));
-  assert.ok(events.includes('download-failed'));
-  assert.ok(events.includes('batch-complete'));
+  const retry = events.find((event) => event.type === 'download-retry');
+  const failure = events.find((event) => event.type === 'download-failed');
+  assert.match(retry.message, /^File 1 of 2: Retrying/);
+  assert.deepEqual([retry.current, retry.total, retry.remaining], [1, 2, 1]);
+  assert.match(failure.message, /^File 1 of 2: Failed/);
+  assert.ok(events.some((event) => event.type === 'batch-complete'));
+});
+
+test('batch does not retry a terminal refusal and stops before later documents', async () => {
+  const fake = createBrowser();
+  const FSD = loadCore(fake);
+  const calls = [];
+  const events = [];
+  const provider = {
+    id: 'meritain',
+    async discoverDocuments() {
+      return [doc('blocked'), doc('later')];
+    },
+    async downloadDocument(document) {
+      calls.push(document.id);
+      const error = new Error('request refused');
+      error.blocked = true;
+      throw error;
+    },
+  };
+
+  const summary = await FSD.runBatch({
+    provider,
+    options: { attempts: 3, delayMs: 0, retryDelayMs: 0 },
+    report: (event) => events.push(event.type),
+  });
+
+  assert.deepEqual(calls, ['blocked']);
+  assert.equal(summary.attempted, 1);
+  assert.equal(summary.failed, 1);
+  assert.equal(summary.stopped, true);
+  assert.equal(events.includes('download-retry'), false);
 });
 
 test('stop controller ends the batch after the active document', async () => {

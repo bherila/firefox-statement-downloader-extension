@@ -119,6 +119,18 @@
       return Math.max(0, Math.round(delayMs - spread / 2 + random() * spread));
     }
 
+    function fileProgress(index) {
+      return {
+        current: index + 1,
+        total: documents.length,
+        remaining: Math.max(0, documents.length - index - 1),
+      };
+    }
+
+    function progressLabel(progress) {
+      return `File ${progress.current} of ${progress.total}`;
+    }
+
     if (!Number.isInteger(attempts) || attempts < 1) {
       throw new RangeError('options.attempts must be a positive integer');
     }
@@ -228,7 +240,7 @@
       return result;
     }
 
-    async function downloadWithRetries(document) {
+    async function downloadWithRetries(document, progress) {
       let lastError;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         if (isStopped(stopController)) {
@@ -242,7 +254,7 @@
           if (isStopped(stopController) || (error && error.stopped)) {
             return { stopped: true };
           }
-          if (attempt === attempts || isStopped(stopController)) {
+          if ((error && error.blocked) || attempt === attempts || isStopped(stopController)) {
             break;
           }
           const retryMs = (error && error.status === 429 ? 4 : 1) * retryDelayMs * Math.pow(2, attempt - 1);
@@ -254,7 +266,8 @@
             attempts,
             delayMs: retryMs,
             error: errorMessage(error),
-            message: `Retrying ${document.title} (${attempt + 1}/${attempts})…`,
+            ...progress,
+            message: `${progressLabel(progress)}: Retrying ${document.title} (attempt ${attempt + 1} of ${attempts}; ${progress.remaining} remaining)…`,
           });
           if (!await waitUnlessStopped(wait(retryMs), stopController)) {
             return { stopped: true };
@@ -266,6 +279,7 @@
 
     for (let index = 0; index < documents.length; index += 1) {
       const document = documents[index];
+      const progress = fileProgress(index);
       if (isStopped(stopController)) {
         summary.stopped = true;
         break;
@@ -277,7 +291,8 @@
           type: 'document-skipped',
           provider: provider.id,
           document,
-          message: `Skipped ${document.title}; it was already downloaded.`,
+          ...progress,
+          message: `${progressLabel(progress)}: Skipped ${document.title}; it was already downloaded (${progress.remaining} remaining).`,
         });
         continue;
       }
@@ -287,10 +302,11 @@
         type: 'download-start',
         provider: provider.id,
         document,
-        message: `Downloading ${document.title}…`,
+        ...progress,
+        message: `${progressLabel(progress)}: Downloading ${document.title} (${progress.remaining} remaining)…`,
       });
       try {
-        const outcome = await downloadWithRetries(document);
+        const outcome = await downloadWithRetries(document, progress);
         if (outcome.stopped) {
           summary.stopped = true;
           break;
@@ -301,7 +317,8 @@
           type: 'download-complete',
           provider: provider.id,
           document,
-          message: `Downloaded ${document.title}.`,
+          ...progress,
+          message: `${progressLabel(progress)}: Downloaded ${document.title} (${progress.remaining} remaining).`,
         });
       } catch (error) {
         summary.failed += 1;
@@ -312,8 +329,14 @@
           document,
           error: errorMessage(error),
           level: 'error',
-          message: `Failed ${document.title}: ${errorMessage(error)}`,
+          ...progress,
+          message: `${progressLabel(progress)}: Failed ${document.title}: ${errorMessage(error)} (${progress.remaining} remaining).`,
         });
+        if (error && error.blocked) {
+          summary.stopped = true;
+          stopController.stop(errorMessage(error));
+          break;
+        }
       }
 
       if (isStopped(stopController)) {
