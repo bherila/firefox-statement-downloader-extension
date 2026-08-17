@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Financial Statement Downloader",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "Bulk-downloads statements and related financial documents from supported institutions.",
   "background": {
     "scripts": [
@@ -17,6 +17,7 @@
     "https://workplaceservices.fidelity.com/*",
     "https://www.wealthfront.com/*",
     "https://connect.meritain.com/*",
+    "https://ext-web.etrade.com/*",
     "webRequest",
     "downloads",
     "storage"
@@ -28,6 +29,7 @@
         "https://digitalservices.fidelity.com/navigate/ent-documentcenter/*",
         "https://www.wealthfront.com/documents*",
         "https://connect.meritain.com/Member/MemberClaim/ClaimSummary*",
+        "https://us.etrade.com/etx/pxy/accountdocs*",
         "https://workplaceservices.fidelity.com/mybenefits/savings2/*"
       ],
       "js": [
@@ -40,6 +42,7 @@
         "providers/wealthfront.js",
         "providers/netbenefits.js",
         "providers/meritain.js",
+        "providers/etrade.js",
         "content.js"
       ],
       "run_at": "document_idle"
