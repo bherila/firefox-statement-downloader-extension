@@ -11,6 +11,7 @@ each institution's document page and runs entirely inside your browser.
 | Coinbase Pro | Monthly account and fill statements | Supported |
 | Fidelity Investments | Statements, trade confirmations, account records, and tax forms | Supported |
 | Wealthfront | Statements, trade confirmations, and tax forms | Supported |
+| E*TRADE | Statements, trade confirmations, tax forms, and correspondence | Needs live verification |
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
 | Meritain Health | Medical and Rx EOB PDFs | Supported |
 | Fidelity Credit Card | Card statements | Not supported |
@@ -54,6 +55,13 @@ would page through data the extension can request once. Documents are served dir
 stable URLs, so downloads go straight to the browser. Trade confirmations outnumber
 everything else several times over and are offered but not preselected.
 
+E*TRADE advertises the available years separately for each document type. The provider
+uses those year lists to query all accounts for statements, trade confirmations, tax
+forms, and correspondence, follows pagination until the API's reported total has been
+reconciled, and downloads each PDF through the matching document endpoint. Authentication
+is bootstrapped from the signed-in Documents page and kept only in memory. Trade
+confirmations are included by default but use a conservative randomized request cadence.
+
 Meritain's member claims page exposes a paginated claims API with fifteen records per
 request. The provider requests Medical and Rx claims for the selected date range (or all
 available records), confirms each EOB through the member's detail API, and downloads the
@@ -67,7 +75,7 @@ During an active run, the provider refreshes Meritain's normal API token at leas
 four minutes as a best-effort session keepalive. Server-enforced absolute timeouts and
 explicit refusals are still terminal; the extension does not retry through them.
 
-Neither provider is forced through Coinbase's monthly report-generation model.
+No provider is forced through Coinbase's monthly report-generation model.
 
 ## How it works
 
@@ -155,4 +163,5 @@ works and what to do if hooks are not firing.
 
 Financial sites change frequently. Review the document count and filenames reported by the
 drawer, use conservative delays, and verify downloaded files. This project is independent
-and is not affiliated with or endorsed by Coinbase, Fidelity Investments, or Wealthfront.
+and is not affiliated with or endorsed by Coinbase, E*TRADE, Fidelity Investments,
+Meritain Health, or Wealthfront.
