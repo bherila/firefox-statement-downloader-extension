@@ -223,6 +223,60 @@ test('collects every page for a year using the all-accounts API filter', async (
   }
 });
 
+test('retries a server error and resumes completed type/year searches on the next attempt', async () => {
+  const provider = loadProvider();
+  const searchBodies = [];
+  const progress = [];
+  let correspondenceAttempts = 0;
+  global.FinancialStatementDownloader.sleep = async () => {};
+  global.fetch = async (url, init) => {
+    if (url.includes('/oauth2/token')) return jsonResponse(tokenPayload());
+    if (url.includes('/usermetadata?')) return jsonResponse(metadataPayload());
+    const body = JSON.parse(init.body);
+    searchBodies.push(body);
+    const docType = body.filters.find((filter) => filter.filterName === 'DocType').values[0];
+    if (docType === 'GeneralCorrespondence') {
+      correspondenceAttempts += 1;
+      if (correspondenceAttempts <= 2) return jsonResponse({}, 500);
+      return jsonResponse({
+        numFound: '1',
+        defaultDocumentList: [rawDocument(2, 'GeneralCorrespondence')],
+      });
+    }
+    return jsonResponse({
+      numFound: '1',
+      defaultDocumentList: [rawDocument(1, 'ClientStatements')],
+    });
+  };
+  const options = {
+    fromYear: '2025',
+    toYear: '2025',
+    docTypes: ['ClientStatements', 'GeneralCorrespondence'],
+    paginationDelayMs: 0,
+    searchRetryDelayMs: 0,
+  };
+
+  await assert.rejects(
+    () => provider.discoverDocuments(options, (event) => progress.push(event.message)),
+    (error) => error.status === 500,
+  );
+  const documents = await provider.discoverDocuments(
+    options,
+    (event) => progress.push(event.message),
+  );
+
+  assert.equal(documents.length, 2);
+  assert.equal(searchBodies.filter((body) => (
+    body.filters.some((filter) => filter.values.includes('ClientStatements'))
+  )).length, 1);
+  assert.equal(correspondenceAttempts, 3);
+  assert.ok(searchBodies.filter((body) => (
+    body.filters.some((filter) => filter.values.includes('GeneralCorrespondence'))
+  )).every((body) => !body.filters.some((filter) => filter.filterName === 'DocSubType')));
+  assert.ok(progress.some((message) => message.includes('cooling down before one retry')));
+  assert.ok(progress.some((message) => message.includes('Resuming after 1 completed type/year search')));
+});
+
 test('rejects a paginated result that does not contain the reported unique documents', async () => {
   const provider = loadProvider();
   global.fetch = async (url) => (

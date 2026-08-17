@@ -28,6 +28,8 @@
 
   let metadataCache = null;
   let accessTokenCache = null;
+  /** @type {{key: string, results: Map<string, Map<string, any>>} | null} */
+  let discoveryCheckpoint = null;
 
   function storage() {
     return app.createProviderStorage(PROVIDER_ID);
@@ -342,7 +344,7 @@
       { filterName: 'KeyAccountNo', values: ['All'] },
       { filterName: 'DocType', values: [docType] },
     ];
-    if (docType !== 'TaxDocuments') {
+    if (docType === 'ClientStatements' || docType === 'TradeConfirmations') {
       filters.push({ filterName: 'DocSubType', values: ['All'] });
     }
     return {
@@ -366,6 +368,21 @@
     return result;
   }
 
+  async function searchDocuments(body, controller, report, retryDelayMs) {
+    const attempts = 2;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await postJson(SEARCH_URL, body, controller);
+      } catch (error) {
+        const transientServerError = error && error.status >= 500 && error.status <= 599;
+        if (!transientServerError || attempt === attempts) throw error;
+        notify(report, 'provider-progress', `E*TRADE returned ${error.status}; cooling down before one retry…`);
+        await app.sleep(retryDelayMs);
+      }
+    }
+    throw new Error('E*TRADE document search retry failed');
+  }
+
   async function discoverDocuments(options = {}, report, controller) {
     const metadata = await getMetadata(controller);
     const selected = Array.isArray(options.docTypes) && options.docTypes.length
@@ -383,10 +400,19 @@
     if (fromYear > toYear) throw new RangeError('The From year must not be after the To year');
 
     const accounts = accountIndex(metadata);
-    const documents = new Map();
     const pauseMs = options.paginationDelayMs === undefined ? 500 : options.paginationDelayMs;
     if (!Number.isFinite(pauseMs) || pauseMs < 0) {
       throw new RangeError('paginationDelayMs must be a non-negative number');
+    }
+    const retryDelayMs = options.searchRetryDelayMs === undefined ? 8000 : options.searchRetryDelayMs;
+    if (!Number.isFinite(retryDelayMs) || retryDelayMs < 0) {
+      throw new RangeError('searchRetryDelayMs must be a non-negative number');
+    }
+    const checkpointKey = JSON.stringify({ fromYear, toYear, docTypes: selected });
+    if (!discoveryCheckpoint || discoveryCheckpoint.key !== checkpointKey) {
+      discoveryCheckpoint = { key: checkpointKey, results: new Map() };
+    } else if (discoveryCheckpoint.results.size > 0) {
+      notify(report, 'provider-progress', `Resuming after ${discoveryCheckpoint.results.size} completed type/year searches…`);
     }
     let requestCount = 0;
 
@@ -395,17 +421,25 @@
         .filter((year) => year >= fromYear && year <= toYear)
         .sort((a, b) => Number(b) - Number(a));
       for (const year of typeYears) {
+        const queryKey = `${docType}:${year}`;
+        if (discoveryCheckpoint.results.has(queryKey)) continue;
         let pageNum = 1;
         let received = 0;
         let expectedTotal = null;
         const queryIds = new Set();
+        const queryDocuments = new Map();
         while (true) {
           if (isStopped(controller)) throw cancellationError(controller);
           if (requestCount > 0 && pauseMs > 0) {
             await app.sleep(Math.round(pauseMs * (0.75 + Math.random() * 0.5)));
           }
           notify(report, 'provider-progress', `Searching ${DOC_TYPE_INDEX.get(docType).label}, ${year}, page ${pageNum}…`);
-          const payload = await postJson(SEARCH_URL, searchBody(docType, year, pageNum), controller);
+          const payload = await searchDocuments(
+            searchBody(docType, year, pageNum),
+            controller,
+            report,
+            retryDelayMs,
+          );
           const rawDocuments = Array.isArray(payload.defaultDocumentList)
             ? payload.defaultDocumentList
             : [];
@@ -419,7 +453,7 @@
             const document = buildDocument(raw, accounts);
             if (!document) throw new Error('E*TRADE returned an incomplete document listing');
             queryIds.add(document.id);
-            documents.set(document.id, document);
+            queryDocuments.set(document.id, document);
           }
           requestCount += 1;
           if (rawDocuments.length === 0 || received >= total) break;
@@ -429,9 +463,15 @@
         if (queryIds.size !== expectedTotal) {
           throw new Error(`E*TRADE reported ${expectedTotal} documents but returned ${queryIds.size} unique documents`);
         }
+        discoveryCheckpoint.results.set(queryKey, queryDocuments);
       }
     }
 
+    const documents = new Map();
+    for (const queryDocuments of discoveryCheckpoint.results.values()) {
+      for (const document of queryDocuments.values()) documents.set(document.id, document);
+    }
+    discoveryCheckpoint = null;
     return [...documents.values()].sort((a, b) => (
       b.date.localeCompare(a.date) || a.filename.localeCompare(b.filename)
     ));

@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Financial Statement Downloader",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Bulk-downloads statements and related financial documents from supported institutions.",
   "background": {
     "scripts": [
