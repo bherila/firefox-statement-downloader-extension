@@ -7,6 +7,8 @@
   let refreshing = 0;
   let selectedFilter = 'all';
   let pageNumber = 1;
+  let listSignature = null;
+  const expandedGroups = new Set();
   let latestSnapshot = null;
   function showAccounts(conflict) {
     query('#account-choice').hidden = !conflict;
@@ -55,9 +57,21 @@
     query('#page').textContent = ` Page ${result.page} of ${result.pages} `;
     query('#previous').disabled = result.page === 1;
     query('#next').disabled = result.page === result.pages;
+    const signature = JSON.stringify([groups.length === 0, ...result.rows.map((group) => ({ key: group.key, merchant: group.merchant,
+      attention: group.attention, waiting: group.waiting, sent: group.sent, other: group.other,
+      records: group.records.map((record) => ({ id: record.id, status: record.status, held: Boolean(record.data),
+        summary: list.summary(record), error: record.error, createdAt: record.createdAt })) }))]);
+    if (signature === listSignature) return;
+    listSignature = signature;
+    for (const item of root.document.querySelectorAll('#receipts > li[data-group-key]')) {
+      const key = item.getAttribute('data-group-key');
+      if (item.querySelector('details')?.hasAttribute('open')) expandedGroups.add(key);
+      else expandedGroups.delete(key);
+    }
     query('#receipts').replaceChildren();
     for (const group of result.rows) {
       const item = root.document.createElement('li');
+      item.setAttribute('data-group-key', group.key);
       const title = root.document.createElement('strong');
       title.textContent = `${group.merchant} · ${group.orderId || 'Gift-card activity pages'}`;
       const detail = root.document.createElement('p');
@@ -67,6 +81,7 @@
       const held = group.records.filter((record) => record.data || record.status === 'refused');
       if (held.length) {
         const details = root.document.createElement('details');
+        if (expandedGroups.has(group.key)) details.setAttribute('open', '');
         const caption = root.document.createElement('summary'); caption.textContent = 'Held revisions and reasons';
         const revisions = root.document.createElement('ul');
         for (const record of held) {

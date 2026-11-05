@@ -51,7 +51,8 @@ test('storage refresh cannot permit a second explicit upload while the first is 
 async function settingsPage(settings, response = async () => ({}), records = []) {
   const { document } = parseHTML(fs.readFileSync(path.join(__dirname, '../options.html'), 'utf8'));
   const calls = [];
-  const browser = { runtime: { async sendMessage(message) {
+  let storageChanged;
+  const browser = { storage: { onChanged: { addListener(fn) { storageChanged = fn; } } }, runtime: { async sendMessage(message) {
     calls.push(message);
     if (message.action === 'importSnapshot') return { ok: true, settings, records, queue: {} };
     return { ok: true, ...await response(message) };
@@ -62,7 +63,7 @@ async function settingsPage(settings, response = async () => ({}), records = [])
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-list.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../options.js'), 'utf8'), scope);
   await new Promise(setImmediate);
-  return { document, calls };
+  return { document, calls, async refreshUI() { storageChanged({ 'fsd:imports:records': {} }, 'local'); await new Promise(setImmediate); } };
 }
 
 test('Waiting disables Sync now, shows the time and preserves the account name', async () => {
@@ -134,4 +135,32 @@ test('the rendered settings list shows one row per order and fifty rows per page
   const search = document.querySelector('#search'); search.value = '100-0000001-1000000';
   search.dispatchEvent(new document.defaultView.Event('input'));
   assert.equal(document.querySelector('#receipts').children.length, 1);
+});
+
+test('polling and an unrelated new capture preserve an expanded refusal explanation', async () => {
+  const order = '100-1000000-1000000';
+  const records = [{ id: 'example-refused', kind: 'receipt', userId: 100000001, status: 'refused', error: 'EXAMPLE REFUSAL EXPLANATION',
+    createdAt: '2026-01-01T00:00:00.000Z', data: { order_id: order, items: [{}], warnings: [] } }];
+  const { document, refreshUI } = await settingsPage({ enabled: true, userId: 100000001 }, async () => ({}), records);
+  const explanation = document.querySelector('#receipts details'); explanation.setAttribute('open', '');
+  await refreshUI();
+  assert.ok(document.querySelector('#receipts details') === explanation, 'Unchanged rows keep their DOM and keyboard focus');
+  records.push({ id: 'example-other', kind: 'receipt', userId: 100000001, status: 'received', createdAt: '2026-01-02T00:00:00.000Z',
+    summary: { orderId: '200-2000000-2000000', itemCount: 2, warnings: [] } });
+  await refreshUI();
+  const original = [...document.querySelectorAll('#receipts > li')].find((row) => row.textContent.includes(order));
+  assert.equal(original.querySelector('details').hasAttribute('open'), true);
+  assert.match(original.textContent, /EXAMPLE REFUSAL EXPLANATION/);
+});
+
+test('an unchanged empty filtered result still updates its empty-collection explanation', async () => {
+  const records = [];
+  const { document, refreshUI } = await settingsPage({ enabled: true, userId: 100000001 }, async () => ({}), records);
+  const search = document.querySelector('#search'); search.value = 'EXAMPLE NO MATCH';
+  search.dispatchEvent(new document.defaultView.Event('input'));
+  assert.match(document.querySelector('#receipts').textContent, /Receipts you capture appear here/);
+  records.push({ id: 'example-other', kind: 'receipt', userId: 100000001, status: 'received', createdAt: '2026-01-01T00:00:00.000Z',
+    summary: { orderId: '100-1000000-1000000', itemCount: 2, warnings: [] } });
+  await refreshUI();
+  assert.equal(document.querySelector('#receipts').textContent, 'No receipts match these filters.');
 });
