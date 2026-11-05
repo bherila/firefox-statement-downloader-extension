@@ -1,6 +1,6 @@
 {
   "name": "firefox-statement-downloader-extension",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "private": true,
   "packageManager": "pnpm@12.11.2",
   "engines": {
@@ -9,7 +9,7 @@
   "description": "Firefox extension that bulk-downloads statements and related financial documents from supported institutions.",
   "scripts": {
     "prepare": "git config core.hooksPath scripts/githooks || true",
-    "build": "mkdir -p dist && zip -FS -X dist/firefox-statement-downloader-extension.zip manifest.json background.js content.js core/*.js providers/*.js README.md",
+    "build": "mkdir -p dist && zip -FS -X dist/firefox-statement-downloader-extension.zip manifest.json background.js content.js options.html options.js options.css core/*.js providers/*.js README.md docs/*.md",
     "check": "node --check background.js && node --check content.js && for file in core/*.js providers/*.js; do node --check \"$file\"; done",
     "lint": "eslint .",
     "test": "node --test tests/*.test.js",
@@ -21,6 +21,7 @@
     "@types/firefox-webext-browser": "143.0.0",
     "eslint": "10.7.0",
     "globals": "17.7.0",
+    "linkedom": "0.18.15",
     "typescript": "7.0.2"
   }
 }

@@ -44,6 +44,13 @@
       return;
     }
 
+    if (provider.observePage) {
+      provider.observePage().catch(() => {
+        // Keep browsing usable; opening the provider drawer retries capture and
+        // displays the storage error through the normal discovery error status.
+      });
+    }
+
     if (provider !== activeProvider) {
       if (activeApp) {
         activeApp.destroy();

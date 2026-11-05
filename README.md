@@ -1,8 +1,8 @@
 # Financial Statement Downloader for Firefox
 
-A Firefox extension for bulk-downloading statements, trade confirmations, and tax
-documents from supported financial institutions. It adds a **Bulk download** button to
-each institution's document page and runs entirely inside your browser.
+A Firefox extension for bulk-downloading financial documents and passively collecting
+Amazon receipts. It runs inside your browser, with optional uploads to Planfina using
+your existing signed-in session.
 
 ## Provider status
 
@@ -14,9 +14,45 @@ each institution's document page and runs entirely inside your browser.
 | E*TRADE | Statements, trade confirmations, tax forms, and correspondence | Needs live verification |
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
 | Meritain Health | Medical and Rx EOB PDFs | Supported |
+| Amazon US | Standard, Whole Foods in-store, and Fresh itemized receipts | Passive capture; validated against saved pages |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
+
+## Amazon receipts and optional imports
+
+Browse Amazon's order history normally and open order details yourself. The extension
+automatically saves item descriptions, ASINs when present, quantities and units, prices,
+labeled charges, totals, and printed dates/status. It makes **no Amazon requests**, follows
+no links, and does not open orders or invoices. Order-history summaries alone do not contain
+the full receipt and are not saved as detailed receipts. Only US English layouts are supported.
+
+Use **Bulk download → Find documents → Download** to export collected receipts as JSON,
+or open the extension's settings for an archive export and upload status. Exact repeats
+are skipped; changed orders become separate revisions. Missing or unparseable item data
+keeps a receipt local for review. Capture includes preloaded item tables, so Fresh's collapsed
+carousel does not restrict it to the initially visible products.
+
+In extension settings, **Connect and enable automatic receipt imports** requests optional
+access to `pfifi.com` and pins the currently signed-in account. The public browser-import
+API stores immutable receipt sources with their itemized data; receipt capture does not
+post ledger transactions or run AI. You can also select statement, payslip, utility-bill,
+and equity-award files to upload explicitly to the existing import queue for review.
+Those document imports may use the destination's configured AI processing.
+
+Login cookies are sent by Firefox; the extension never reads or saves them. CSRF tokens
+stay in background memory. An identity-provider login alone may require opening the app
+once to establish its session. Normal-profile sessions are supported; private-window capture
+is disabled, and container-only logins may require signing in in a normal tab. The receipt
+receiver and session-bootstrap endpoints must be available before connecting can succeed.
+
+Imports send at most ten receipts per minute and pause on a failure or account change.
+Reconnect explicitly to resume. Previously pinned records never move to a different account.
+Source documents stay local until imports are enabled. Storage holds up to 2,000 revisions;
+export before clearing it. Clearing also removes local upload history. Raw HTML, images,
+shipping addresses, payment credentials, and the HAR used for calibration are not stored.
+
+The API contract, design, and remaining scope are in [docs/passive-receipts.md](docs/passive-receipts.md).
 
 Retail Fidelity, NetBenefits, and the credit card are three separate archives, not one.
 The retail document APIs return nothing for workplace or card accounts even though both

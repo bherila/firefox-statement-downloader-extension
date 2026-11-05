@@ -1,10 +1,15 @@
 {
   "manifest_version": 2,
   "name": "Financial Statement Downloader",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "description": "Bulk-downloads statements and related financial documents from supported institutions.",
   "background": {
     "scripts": [
+      "core/runtime.js",
+      "providers/amazon.js",
+      "core/import-client.js",
+      "core/import-store.js",
+      "core/import-background.js",
       "background.js"
     ],
     "persistent": true
@@ -20,7 +25,9 @@
     "https://ext-web.etrade.com/*",
     "webRequest",
     "downloads",
-    "storage"
+    "storage",
+    "https://www.amazon.com/*",
+    "alarms"
   ],
   "content_scripts": [
     {
@@ -30,7 +37,11 @@
         "https://www.wealthfront.com/documents*",
         "https://connect.meritain.com/Member/MemberClaim/ClaimSummary*",
         "https://us.etrade.com/etx/pxy/accountdocs*",
-        "https://workplaceservices.fidelity.com/mybenefits/savings2/*"
+        "https://workplaceservices.fidelity.com/mybenefits/savings2/*",
+        "https://www.amazon.com/gp/css/order-history*",
+        "https://www.amazon.com/your-orders/*",
+        "https://www.amazon.com/fopo/order-details*",
+        "https://www.amazon.com/uff/your-account/order-details*"
       ],
       "js": [
         "core/runtime.js",
@@ -43,6 +54,7 @@
         "providers/netbenefits.js",
         "providers/meritain.js",
         "providers/etrade.js",
+        "providers/amazon.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -53,5 +65,12 @@
       "id": "firefox-statement-downloader-extension@bwh.local",
       "strict_min_version": "78.0"
     }
+  },
+  "optional_permissions": [
+    "https://pfifi.com/*"
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   }
 }
