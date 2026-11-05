@@ -75,7 +75,7 @@
   // Wrapped rather than passed directly: these callbacks receive an event or a
   // MutationRecord list, which would otherwise be taken as the delay.
   const observer = new MutationObserver(() => scheduleReconcile());
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   root.addEventListener('popstate', () => scheduleReconcile());
   root.addEventListener('hashchange', () => scheduleReconcile());
 })(globalThis);
