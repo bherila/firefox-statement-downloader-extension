@@ -121,7 +121,7 @@ test.afterEach(() => {
 });
 
 test('registers the E*TRADE page, API permission, and provider script', () => {
-  const manifest = require('../manifest.json');
+  const manifest = require('../scripts/build.js').buildManifest();
   assert.ok(manifest.permissions.includes('https://ext-web.etrade.com/*'));
   assert.ok(manifest.content_scripts[0].matches.includes('https://us.etrade.com/etx/pxy/accountdocs*'));
   assert.ok(manifest.content_scripts[0].js.includes('providers/etrade.js'));

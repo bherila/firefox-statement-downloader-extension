@@ -19,7 +19,7 @@ export default [
     },
   },
   {
-    files: ['background.js', 'content.js', 'core/**/*.js', 'providers/**/*.js'],
+    files: ['background.js', 'content.js', 'options.js', 'core/**/*.js', 'providers/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'script',
@@ -30,7 +30,7 @@ export default [
     },
   },
   {
-    files: ['tests/**/*.js'],
+    files: ['tests/**/*.js', 'scripts/**/*.js'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'commonjs',

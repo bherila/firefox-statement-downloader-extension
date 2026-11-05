@@ -17,6 +17,7 @@ interface FsdProvider {
   discoverDocuments(options?: any, report?: any, controller?: any): Promise<any[]>;
   downloadDocument(document: any, report?: any, controller?: any): Promise<any>;
   loadState?(): Promise<any>;
+  observePage?(): Promise<void>;
   matches?(url: string): boolean;
   requiresDateRange?: boolean;
   docTypes?: Array<{ code: string; label: string }>;
@@ -46,6 +47,7 @@ interface Error {
   blocked?: boolean;
   sessionExpired?: boolean;
   status?: number;
+  retryAfterMs?: number;
   stopped?: boolean;
 }
 

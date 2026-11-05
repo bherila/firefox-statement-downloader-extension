@@ -44,6 +44,13 @@
       return;
     }
 
+    if (provider.observePage) {
+      provider.observePage().catch(() => {
+        // Keep browsing usable; opening the provider drawer retries capture and
+        // displays the storage error through the normal discovery error status.
+      });
+    }
+
     if (provider !== activeProvider) {
       if (activeApp) {
         activeApp.destroy();
@@ -68,7 +75,7 @@
   // Wrapped rather than passed directly: these callbacks receive an event or a
   // MutationRecord list, which would otherwise be taken as the delay.
   const observer = new MutationObserver(() => scheduleReconcile());
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   root.addEventListener('popstate', () => scheduleReconcile());
   root.addEventListener('hashchange', () => scheduleReconcile());
 })(globalThis);

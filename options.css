@@ -1,0 +1,9 @@
+:root { color-scheme: light dark; font: 15px/1.6 system-ui, sans-serif; }
+body { margin: 0 auto; max-width: 800px; padding: 24px; }
+h1 { font-size: 26px; } h2 { font-size: 19px; }
+section { border-top: 1px solid #8886; margin-top: 24px; padding-top: 12px; }
+button, input, select { font: inherit; padding: 6px 10px; margin: 4px 6px 4px 0; }
+label { display: block; margin: 12px 0; }
+#receipts { max-height: 320px; overflow: auto; padding-left: 22px; }
+#status { background: Canvas; border: 1px solid #8886; padding: 12px; }
+a { color: LinkText; }
