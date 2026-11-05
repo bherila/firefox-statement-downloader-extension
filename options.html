@@ -3,27 +3,40 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AMZ source and document imports</title>
+  <title>Receipts and document imports</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
   <main>
-    <h1>AMZ source and document imports</h1>
+    <h1>Receipts and document imports</h1>
     <p>Order details and gift-card balance pages are collected locally as you browse them. No pages are opened or requested automatically. Raw pages, images, addresses, cookies, payment credentials, and gift-card claim codes are excluded.</p>
     <p id="status" role="status" aria-live="polite">Ready.</p>
     <section aria-labelledby="destination-title">
       <h2 id="destination-title">pfifi.com</h2>
       <p>Use your existing <a href="https://pfifi.com/finance/import" target="_blank" rel="noreferrer">pfifi.com login</a>. Connecting sends collected sources to that account automatically. Receipt and gift-card uploads preserve source evidence. Review statement imports in Import Center before applying them.</p>
-      <p id="connection">Loading…</p>
+      <p id="connection" role="status" aria-live="polite">Loading saved receipts…</p>
+      <p id="account"></p>
       <p>Sources upload in batches of up to 20. Rate limits retry automatically after the server’s requested wait. Pause stops new sends; an in-flight batch may finish.</p>
-      <button id="connect" type="button">Connect and enable automatic source imports</button>
+      <a id="open-destination" href="https://pfifi.com/finance/import" target="_blank" rel="noreferrer" hidden>Open pfifi.com</a>
+      <button id="connect" type="button" hidden>Connect to pfifi.com</button>
+      <button id="resume" type="button" hidden>Resume</button>
+      <button id="review-accounts" type="button" hidden>Review accounts</button>
+      <button id="allow-access" type="button" hidden>Allow access</button>
+      <section id="account-choice" aria-labelledby="account-choice-title" hidden>
+        <h3 id="account-choice-title">Review accounts</h3>
+        <p id="account-comparison"></p>
+        <a href="https://pfifi.com/finance/import" target="_blank" rel="noreferrer">Sign in as the original account</a>
+        <button id="use-new-account" type="button">Send new receipts to the new account</button>
+        <p>Existing receipts stay with their original account.</p>
+      </section>
       <button id="disconnect" type="button">Pause imports</button>
-      <button id="sync" type="button">Sync saved sources</button>
+      <button id="sync" type="button">Sync now</button>
+      <span id="sync-wait"></span>
     </section>
     <section aria-labelledby="receipts-title">
       <h2 id="receipts-title">Collected sources</h2>
       <p id="counts"></p>
-      <p>Changed sources are kept as separate revisions. Sources with missing data stay local. Gift-card snapshots contain the current balance and the activity page you viewed; they don’t claim a complete history or reconcile a wallet. Storage holds up to 2,000 revisions; export before clearing.</p>
+      <p>Changed sources are kept as separate revisions. A partial source waits one minute before sending, so a page that finishes loading sends its complete revision instead. Sources refused by pfifi.com stay here with their reason while other sources continue. Gift-card snapshots contain the current balance and the activity page you viewed; they don’t claim a complete history or reconcile a wallet. Storage holds up to 2,000 revisions; export before clearing.</p>
       <button id="export" type="button">Export all sources as JSON</button>
       <button id="clear" type="button">Clear local sources…</button>
       <ul id="receipts"></ul>
@@ -42,6 +55,8 @@
       <p>If an upload loses its acknowledgement, check Import Center before trying again.</p>
     </section>
   </main>
+  <script src="core/runtime.js"></script>
+  <script src="core/import-status.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

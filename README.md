@@ -31,7 +31,7 @@ the full receipt and are not saved as detailed receipts. Only US English layouts
 Use **Bulk download → Find documents → Download** to export collected receipts as JSON,
 or open the extension's settings for an archive export and upload status. Exact repeats
 are skipped; changed orders become separate revisions. Missing or unparseable item data
-keeps a receipt local for review. Capture includes preloaded item tables, so Fresh's collapsed
+marks a receipt as partial. A partial waits one minute before sending, giving the page time to finish loading. If a complete read arrives during that wait, the older partial is kept locally without being sent. Capture includes preloaded item tables, so Fresh's collapsed
 carousel does not restrict it to the initially visible products.
 
 In extension settings, **Connect and enable automatic receipt imports** requests optional
@@ -49,9 +49,8 @@ receiver and session-bootstrap endpoints must be available before connecting can
 
 Imports send up to twenty receipts per request, with at least five seconds between batches.
 HTTP 429 responses honor `Retry-After` and retry automatically with increasing, randomized
-backoff; the pending receipt batch and retry deadline survive a browser restart. Other failures
-and account changes pause imports until you reconnect. Pause prevents starting another batch;
-an upload already in flight can finish. Previously pinned records never move to a different account.
+backoff; the pending receipt batch and retry deadline survive a browser restart. Network errors, timeouts and server failures use the same durable retry schedule. Indexed validation refusals set only the affected sources aside with their reason; healthy sources keep sending. Authentication, permission, account changes and revoked destination access stop imports with an action to resolve the problem. Pause prevents starting another batch;
+an upload already in flight can finish. Previously pinned records never move to a different account. Resume shows both account names when a different account is signed in and requires an explicit choice before sending. Choosing the new account applies only to new or unpinned sources.
 Source documents stay local until imports are enabled. Storage holds up to 2,000 revisions;
 export before clearing it. Clearing also removes local upload history. Raw HTML, images,
 shipping addresses, payment credentials, and the HAR used for calibration are not stored.

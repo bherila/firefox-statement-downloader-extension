@@ -92,7 +92,7 @@ test('connect explicitly pins local captures and uploads exactly once across ove
   assert.equal((await store.snapshot()).records[0].status, 'received');
 });
 
-test('review warnings keep a receipt local while complete receipts can sync', async () => {
+test('review warnings keep a newly captured receipt local during its settling window', async () => {
   const { store, uploads } = harness();
   const raw = receipt(); raw.warnings = ['item_price_missing'];
   await store.capture(raw); await store.configure(true); await store.flush();
@@ -402,4 +402,267 @@ test('provider naming preserves the existing wire bytes and stable source identi
   // These digests predate the codename change and cover schema, origins, and field order.
   assert.equal(savedReceipt.id, 'd2c52b0d4c332082fb4549571c9298b626b454daba42c02b4117ffb850d01cd8');
   assert.equal(savedBalance.id, '17153ee1f6c78bf276d3b6af856f2b97b04c6c1046d90482f2991329cc578fa6');
+});
+
+function distinctReceipt(index) {
+  const data = receipt();
+  data.order_id = `100-1000000-${1000000 + index}`;
+  data.source_url = `${amz.origin}/your-orders/order-details?orderID=${data.order_id}`;
+  return data;
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('session names fall back to account numbers and mismatches expose identity with HTTP409 semantics', async () => {
+  for (const [name, expected] of [['  Example Owner  ', 'Example Owner'], ['', '2'], [undefined, '2']]) {
+    const client = importClient.createImportClient(async () => ({ ok: true, async json() {
+      return { user_id: 2, user_name: name, csrf_token: 'synthetic-csrf' };
+    } }));
+    assert.equal((await client.session()).userName, expected);
+    await assert.rejects(client.uploadBatch([{ id: 'a'.repeat(64), kind: 'receipt' }], 1),
+      (error) => error.status === 409 && error.activeIdentity.userId === 2 && error.activeIdentity.userName === expected);
+  }
+});
+
+test('client preserves 422 validation bodies and distinguishes indexed refusals from request errors', async () => {
+  const body = { message: 'Example validation failure', errors: {
+    'sources.3.items.0.title': ['Example title required'], 'sources.3.total_cents': ['Example total invalid'],
+    'files.1': ['Example file invalid'], expected_user_id: ['Example owner required'],
+  } };
+  const client = importClient.createImportClient(async (url) => ({ ok: url.endsWith('/session'), status: 422, async json() {
+    return url.endsWith('/session') ? { user_id: 1, csrf_token: 'synthetic-csrf' } : body;
+  } }));
+  await assert.rejects(client.uploadBatch([{ kind: 'receipt', id: 'a'.repeat(64), filename: 'example.json',
+    bytes: new Uint8Array([1]), contentType: 'application/json' }], 1), (error) => {
+    assert.equal(error.status, 422); assert.deepEqual(error.body, body);
+    assert.deepEqual(error.sourceErrors, { 3: ['Example title required', 'Example total invalid'] });
+    assert.deepEqual(error.requestErrors, { 'files.1': ['Example file invalid'], expected_user_id: ['Example owner required'] });
+    return true;
+  });
+});
+
+test('one indexed refusal is quarantined with its reason while the other nineteen send on the next batch', async () => {
+  const { store, client, clock } = harness();
+  for (let index = 0; index < 20; index += 1) await store.capture(distinctReceipt(index));
+  let posts = 0;
+  const received = [];
+  const realClient = importClient.createImportClient(async (url, options) => {
+    if (url.endsWith('/session')) return { ok: true, async json() { return { user_id: 1, csrf_token: 'synthetic-csrf' }; } };
+    posts += 1;
+    const ids = options.body.getAll('sha256[]');
+    if (posts === 1) return { ok: false, status: 422, async json() {
+      return { errors: { 'sources.3.items.0.title': ['Example source could not be read.'] } };
+    } };
+    received.push(...ids);
+    return { ok: true, async json() { return { results: ids.map((id, index) => ({ sha256: id, document_id: index + 1, status: 'received' })) }; } };
+  });
+  client.uploadBatch = realClient.uploadBatch;
+  await store.configure(true);
+  const first = await store.flush();
+  assert.equal(first.refused, 1);
+  let state = await store.snapshot();
+  assert.equal(state.settings.enabled, true);
+  assert.equal(state.records[3].status, 'refused');
+  assert.equal(state.records[3].error, 'Example source could not be read.');
+  assert.equal(state.records.filter((record) => record.status === 'local').length, 19);
+  clock.value = first.nextSyncAt;
+  assert.equal((await store.flush()).sent, 19);
+  state = await store.snapshot();
+  assert.equal(received.length, 19);
+  assert.ok(!received.includes(state.records[3].id));
+  assert.equal(state.records.filter((record) => record.status === 'received').length, 19);
+});
+
+test('request-level validation failures retry without accusing or discarding individual sources', async () => {
+  const { store, client, clock } = harness();
+  await store.capture(receipt()); await store.configure(true);
+  client.uploadBatch = async () => { throw Object.assign(new Error('Example request invalid'), {
+    status: 422, sourceErrors: {}, requestErrors: { expected_user_id: ['Example request invalid'] },
+  }); };
+  const result = await store.flush();
+  const state = await store.snapshot();
+  assert.equal(result.nextSyncAt, clock.value + 30000);
+  assert.equal(state.records[0].status, 'local');
+  assert.equal(state.settings.enabled, true);
+  assert.equal(state.queue.phase, 'retrying');
+  assert.equal(state.settings.lastError, 'Example request invalid');
+});
+
+test('network, timeout and server errors retry durably without reconnecting or changing source identities', async () => {
+  for (const failure of [new TypeError('Example network unavailable'), Object.assign(new Error('Example timeout'), { name: 'AbortError' }),
+    Object.assign(new Error('Example server unavailable'), { status: 500 }), Object.assign(new Error('Example gateway unavailable'), { status: 503 })]) {
+    const { store, client, storage, clock, uploads } = harness();
+    const captured = await store.capture(receipt()); await store.configure(true);
+    const normal = client.uploadBatch.bind(client);
+    let attempts = 0;
+    client.uploadBatch = async (...args) => { attempts += 1; if (attempts === 1) throw failure; return normal(...args); };
+    const first = await store.flush();
+    const state = await store.snapshot();
+    assert.equal(state.settings.enabled, true);
+    assert.equal(state.queue.phase, 'retrying');
+    assert.equal(state.queue.retryKind, 'transient');
+    assert.equal(state.queue.retryAt, clock.value + 30000);
+    const restarted = importStore.createImportStore(storage, client, { now: () => clock.value, random: () => 0 });
+    clock.value = first.nextSyncAt - 1;
+    await restarted.flush(); assert.equal(attempts, 1);
+    clock.value += 1; await restarted.flush();
+    assert.equal(uploads[0].record.id, captured.id);
+    assert.equal((await restarted.snapshot()).queue.phase, 'all_sent');
+    assert.equal((await restarted.snapshot()).queue.lastSentAt, new Date(clock.value).toISOString());
+  }
+});
+
+test('pause acknowledges during an in-flight failure and stays paused across retry deadlines and restart', async () => {
+  for (const status of [429, 503, undefined]) {
+    const { store, storage, client, clock } = harness();
+    await store.capture(receipt()); await store.configure(true);
+    const started = deferred(); const held = deferred(); let sends = 0;
+    client.uploadBatch = async () => { sends += 1; started.resolve(); await held.promise;
+      throw Object.assign(new Error('Example temporary failure'), { status }); };
+    const sending = store.flush(); await started.promise;
+    assert.equal((await store.snapshot()).queue.phase, 'sending');
+    await store.configure(false);
+    assert.equal((await store.snapshot()).queue.phase, 'pausing');
+    const restarted = importStore.createImportStore(storage, client, { now: () => clock.value, random: () => 0 });
+    assert.equal((await restarted.snapshot()).queue.phase, 'paused');
+    held.resolve(); await sending;
+    clock.value += 3600000;
+    await restarted.flush(); await store.flush();
+    assert.equal(sends, 1);
+    assert.equal((await store.snapshot()).queue.phase, 'paused');
+  }
+});
+
+test('revoked access remains a durable stop even if the in-flight batch succeeds or fails', async () => {
+  for (const failure of [false, true]) {
+    const { store, storage, client } = harness();
+    await store.capture(receipt()); await store.configure(true);
+    const started = deferred(); const held = deferred(); const normal = client.uploadBatch.bind(client);
+    client.uploadBatch = async (...args) => { started.resolve(); await held.promise;
+      if (failure) throw Object.assign(new Error('Example permission response'), { status: 403 });
+      return normal(...args);
+    };
+    const sending = store.flush(); await started.promise;
+    await store.stop('access_revoked');
+    assert.equal((await store.snapshot()).queue.stopReason, 'access_revoked');
+    held.resolve();
+    if (failure) await assert.rejects(sending); else await sending;
+    const restarted = importStore.createImportStore(storage, client);
+    const state = await restarted.snapshot();
+    assert.equal(state.queue.phase, 'stopped');
+    assert.equal(state.queue.stopReason, 'access_revoked');
+    assert.equal(state.settings.enabled, false);
+  }
+});
+
+test('lost or partial source acknowledgements retry idempotently without marking a subset received', async () => {
+  const { store, client, clock } = harness();
+  await store.capture(distinctReceipt(0)); await store.capture(distinctReceipt(1)); await store.configure(true);
+  const attempts = [];
+  client.uploadBatch = async (records) => {
+    attempts.push(records.map((record) => ({ id: record.id, bytes: Array.from(record.bytes) })));
+    return records.slice(0, attempts.length === 1 ? 1 : 2).map((record, index) => ({ id: record.id, remoteId: index + 1 }));
+  };
+  const retry = await store.flush();
+  assert.equal((await store.snapshot()).records.every((record) => record.status === 'local'), true);
+  clock.value = retry.nextSyncAt;
+  assert.equal((await store.flush()).sent, 2);
+  assert.deepEqual(attempts[0], attempts[1]);
+});
+
+test('Resume requires an explicit account choice and switching never re-pins existing evidence', async () => {
+  const { store, client, uploads, clock } = harness();
+  client.session = async () => ({ userId: 1, userName: 'Example Original Owner' });
+  await store.capture(receipt()); await store.configure(true); await store.configure(false);
+  client.session = async () => ({ userId: 2, userName: 'Example New Owner' });
+  const conflict = await store.configure(true);
+  assert.equal(conflict.requiresAccountChoice, true);
+  assert.deepEqual(conflict.accountConflict, { original: { userId: 1, userName: 'Example Original Owner' }, active: { userId: 2, userName: 'Example New Owner' } });
+  await store.flush(); assert.equal(uploads.length, 0);
+  assert.equal((await store.snapshot()).queue.phase, 'stopped');
+  await store.configure(true, { useNewAccount: true });
+  await store.capture(distinctReceipt(1)); await store.flush();
+  let state = await store.snapshot();
+  assert.equal(state.records[0].userId, 1); assert.equal(state.records[0].status, 'local');
+  assert.equal(state.records[1].userId, 2); assert.equal(uploads[0].owner, 2);
+  client.session = async () => ({ userId: 1, userName: 'Example Original Owner' });
+  assert.equal((await store.configure(true)).requiresAccountChoice, true);
+  await store.configure(true, { useNewAccount: true }); clock.value += 5000; await store.flush();
+  state = await store.snapshot();
+  assert.equal(state.records[0].userId, 1); assert.equal(state.records[0].status, 'received');
+  assert.deepEqual(uploads.map((upload) => upload.owner), [2, 1]);
+});
+
+test('partial sources upload flagged after exactly one minute using the injected capture clock', async () => {
+  for (const kind of ['receipt', 'gift-card-snapshot']) {
+    const { store, clock, uploads } = harness();
+    const source = kind === 'receipt' ? receipt() : giftCardSnapshot();
+    source.warnings = ['unparsed_items'];
+    const started = clock.value;
+    if (kind === 'receipt') await store.capture(source); else await store.captureGiftCardSnapshot(source);
+    await store.configure(true);
+    const state = await store.snapshot();
+    assert.equal(state.records[0].createdAt, new Date(started).toISOString());
+    assert.equal((await store.flush()).nextSyncAt, started + 60000);
+    clock.value += 59999; await store.flush(); assert.equal(uploads.length, 0);
+    clock.value += 1; await store.flush();
+    assert.deepEqual(uploads[0].record.data.warnings, ['unparsed_items']);
+    assert.equal((await store.snapshot()).records[0].status, 'received');
+  }
+});
+
+test('a receipt that finishes before the deadline suppresses only its matching partial revision without deleting it', async () => {
+  const { store, clock, uploads } = harness();
+  const partial = receipt(); partial.warnings = ['item_price_missing'];
+  await store.capture(partial);
+  const unrelated = distinctReceipt(1); unrelated.warnings = ['item_price_missing']; await store.capture(unrelated);
+  await store.configure(true); await store.flush(); clock.value += 59000;
+  const complete = await store.capture(receipt()); await store.flush();
+  const state = await store.snapshot();
+  assert.equal(state.records.length, 3);
+  assert.equal(state.records[0].status, 'suppressed');
+  assert.equal(state.records[0].suppressedBy, complete.id);
+  assert.deepEqual(state.records[0].data.warnings, ['item_price_missing']);
+  assert.equal(state.records[1].status, 'local');
+  assert.equal(uploads.length, 1);
+  assert.deepEqual(uploads[0].record.data.warnings, []);
+});
+
+test('a complete read after a partial was sent is a distinct revision and never erases evidence', async () => {
+  const { store, clock, uploads } = harness();
+  const partial = receipt(); partial.warnings = ['item_price_missing'];
+  await store.capture(partial); await store.configure(true); clock.value += 60000; await store.flush();
+  await store.capture(receipt()); clock.value += 5000; await store.flush();
+  assert.equal(uploads.length, 2);
+  assert.equal((await store.snapshot()).records.every((record) => record.status === 'received'), true);
+});
+
+test('snapshot suppression requires matching activity-page evidence, multiplicities and recipient', async () => {
+  const { store, clock, client } = harness();
+  const partial = giftCardSnapshot(); partial.warnings = ['unparsed_activity_rows'];
+  await store.captureGiftCardSnapshot(partial); await store.configure(true);
+  clock.value += 1000;
+  const otherPage = giftCardSnapshot(); otherPage.activities[0].date_text = 'January 1, 2026';
+  await store.captureGiftCardSnapshot(otherPage);
+  assert.equal((await store.snapshot()).records[0].status, 'local');
+  await store.captureGiftCardSnapshot(giftCardSnapshot());
+  assert.equal((await store.snapshot()).records[0].status, 'suppressed');
+  const repeatedPartial = giftCardSnapshot(); repeatedPartial.warnings = ['unparsed_activity_rows'];
+  repeatedPartial.activities.push(structuredClone(repeatedPartial.activities[0]));
+  await store.captureGiftCardSnapshot(repeatedPartial);
+  await store.captureGiftCardSnapshot(giftCardSnapshot());
+  assert.equal((await store.snapshot()).records[3].status, 'local');
+  const repeatedComplete = structuredClone(repeatedPartial); repeatedComplete.warnings = [];
+  await store.captureGiftCardSnapshot(repeatedComplete);
+  assert.equal((await store.snapshot()).records[3].status, 'suppressed');
+  const otherOwner = receipt(); otherOwner.warnings = ['item_price_missing']; await store.capture(otherOwner);
+  client.session = async () => ({ userId: 2 });
+  await store.configure(true, { useNewAccount: true });
+  await store.capture(receipt());
+  const state = await store.snapshot();
+  assert.equal(state.records.find((record) => record.data.warnings.includes('item_price_missing')).status, 'local');
 });

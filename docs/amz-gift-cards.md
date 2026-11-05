@@ -16,7 +16,7 @@ contain redeemable gift-card claim codes. Only a normalized type (`redemption`, 
 `refund`, `adjustment`, or `unknown`) is retained. Claim codes, arbitrary descriptions,
 addresses, credentials, images, pagination cursors, and request metadata are excluded.
 Unknown activity types remain valid unreviewed evidence. Malformed numeric/date rows
-produce `unparsed_activity_rows`, so an incomplete snapshot can stay local for review.
+produce `unparsed_activity_rows`, so an incomplete snapshot is labelled partial and waits one minute before sending. A complete read of the same visible page during that wait suppresses the older partial upload.
 Missing balances and unrecognized table layouts do not produce a snapshot.
 
 The provider uses the shared local source queue through `captureAmzGiftCardSnapshot`

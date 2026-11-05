@@ -5,6 +5,8 @@
   const SETTINGS = 'fsd:imports:settings';
   const PAUSED = 'fsd:imports:paused';
   const RECORDS = 'fsd:imports:records';
+  const STOPPED = 'fsd:imports:stopped';
+  const PARTIAL_WAIT_MS = 60000;
   const MAX_RECORDS = 2000;
   const MAX_SOURCE_BYTES = 512 * 1024;
 
@@ -20,15 +22,21 @@
     let syncing = null;
     let pauseRequested = false;
     let preferenceVersion = 0;
+    let activeBatch = [];
     const serial = (fn) => {
       const result = tail.then(fn);
       tail = result.catch(() => {});
       return result;
     };
     async function load() {
-      const saved = await storage.get([SETTINGS, RECORDS, PAUSED]);
-      const settings = saved[SETTINGS] || { enabled: false, userId: null };
-      return { settings: saved[PAUSED] ? { ...settings, enabled: false } : settings, records: saved[RECORDS] || [] };
+      const saved = await storage.get([SETTINGS, RECORDS, PAUSED, STOPPED]);
+      const settings = { enabled: false, userId: null, userName: null, ...saved[SETTINGS] };
+      const stopped = saved[STOPPED];
+      return {
+        settings: { ...settings, ...(saved[PAUSED] || stopped ? { enabled: false } : {}),
+          ...(stopped ? { stopReason: stopped.reason, lastError: stopped.message, accountConflict: stopped.accountConflict || null } : {}) },
+        records: saved[RECORDS] || [],
+      };
     }
     const saveRecords = (records) => storage.set({ [RECORDS]: records });
 
@@ -116,56 +124,148 @@
       return saveSource(data, 'gift-card-snapshot', 'amz-gift-cards');
     }
 
+    function identity(value) {
+      return { userId: value.userId, userName: value.userName || String(value.userId) };
+    }
+
+    function eligibleAt(record) {
+      if (!record.data.warnings.length) return 0;
+      return record.eligibleAt || Date.parse(record.createdAt) + PARTIAL_WAIT_MS;
+    }
+
+    function sameSource(partial, complete) {
+      if (partial.kind !== complete.kind || partial.userId !== complete.userId
+        || partial.data.marketplace !== complete.data.marketplace) return false;
+      if (partial.kind === 'receipt') return partial.data.order_id === complete.data.order_id;
+      // Every activity page has the same canonical URL. Require overlapping row
+      // evidence as well so visiting another page cannot suppress this source.
+      if (partial.data.source_url !== complete.data.source_url
+        || partial.data.balance_cents !== complete.data.balance_cents
+        || partial.data.has_previous_page !== complete.data.has_previous_page
+        || partial.data.has_next_page !== complete.data.has_next_page
+        || !partial.data.activities.length) return false;
+      const remaining = complete.data.activities.map((row) => JSON.stringify(row));
+      return partial.data.activities.every((row) => {
+        const index = remaining.indexOf(JSON.stringify(row));
+        if (index === -1) return false;
+        remaining.splice(index, 1);
+        return true;
+      });
+    }
+
     async function saveSource(data, kind, provider) {
       const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
       if (bytes.length > MAX_SOURCE_BYTES) throw new Error('Source is too large to save.');
       const id = await hash(bytes);
       return serial(async () => {
         const { settings, records } = await load();
-        // Same bytes are a no-op; later changes to an order become a new source
-        // revision. The first observation time lives outside the hashed bytes.
-        if (!records.some((record) => record.id === id)) {
+        let record = records.find((item) => item.id === id);
+        if (!record) {
           if (records.length >= MAX_RECORDS) throw new Error('Source storage is full. Export and clear sources in settings.');
           const prefix = kind === 'receipt' ? `amz-${data.order_id}` : 'amz-gift-card-balance';
-          records.push({ id, kind, provider, data,
+          record = { id, kind, provider, data,
             filename: `${prefix}-${id.slice(0, 12)}.json`, contentType: 'application/json',
-            createdAt: new Date().toISOString(), userId: settings.userId, status: 'local' });
-          await saveRecords(records);
+            createdAt: new Date(now()).toISOString(), userId: settings.userId, status: 'local',
+            ...(data.warnings.length ? { eligibleAt: now() + PARTIAL_WAIT_MS } : {}) };
+          records.push(record);
         }
+        if (!data.warnings.length) {
+          for (const partial of records) {
+            if (partial.status === 'local' && partial.data.warnings.length && now() < eligibleAt(partial)
+              && sameSource(partial, record)) {
+              partial.status = 'suppressed';
+              partial.suppressedBy = id;
+            }
+          }
+        }
+        await saveRecords(records);
         return { id, count: records.length };
       });
     }
 
-    async function configure(enabled) {
+    async function stop(reason, details = {}) {
+      preferenceVersion += 1;
+      const { settings } = await load();
+      if (settings.stopReason === 'access_revoked' && reason !== 'access_revoked') return { stopped: true, stopReason: 'access_revoked' };
+      const accountConflict = details.activeIdentity ? { original: identity(settings), active: identity(details.activeIdentity) }
+        : details.accountConflict || settings.accountConflict || null;
+      // Independent of the batch's settings write: an in-flight completion or
+      // failure can never undo a permission revocation or an account stop.
+      await storage.set({ [STOPPED]: { reason, message: details.message || null, accountConflict } });
+      return { stopped: true, stopReason: reason };
+    }
+
+    async function configure(enabled, options = {}) {
       const version = ++preferenceVersion;
       if (!enabled) {
-        // This gate has its own storage key: pausing must be effective and
-        // durable even while the record queue awaits an in-flight upload.
         pauseRequested = true;
         await storage.set({ [PAUSED]: true });
-        return serial(async () => {
-          const { settings } = await load();
-          await storage.set({ [SETTINGS]: { ...settings, enabled: false } });
-        });
+        return { paused: true };
       }
-      // Only settings UI can call this. Pin the recipient; a different login
-      // never silently takes over previously collected private documents.
-      const active = await client.session();
+      let active;
+      try {
+        active = identity(await client.session());
+      } catch (error) {
+        if (version === preferenceVersion && [401, 419, 403, 409].includes(error.status)) {
+          await stop(stopReason(error), { message: error.message, activeIdentity: error.activeIdentity });
+        }
+        throw error;
+      }
       return serial(async () => {
         if (version !== preferenceVersion) throw new Error('Import preferences changed while connecting.');
         const { settings: previous, records } = await load();
         if (version !== preferenceVersion) throw new Error('Import preferences changed while connecting.');
+        if (previous.userId && previous.userId !== active.userId && !options.useNewAccount) {
+          const accountConflict = { original: identity(previous), active };
+          await storage.set({ [STOPPED]: { reason: 'account_changed', accountConflict } });
+          return { requiresAccountChoice: true, accountConflict };
+        }
+        // Explicit account choice applies only to future/unpinned observations.
+        // Existing evidence never changes its recipient.
         for (const record of records) if (record.userId === null) record.userId = active.userId;
         const throttle = previous.userId === active.userId
-          ? { nextSyncAt: previous.nextSyncAt, retryAt: previous.retryAt, retryAttempt: previous.retryAttempt } : {};
-        await storage.set({ [SETTINGS]: { enabled: true, userId: active.userId, ...throttle }, [RECORDS]: records, [PAUSED]: false });
+          ? { nextSyncAt: previous.nextSyncAt, retryAt: previous.retryAt, retryAttempt: previous.retryAttempt, retryKind: previous.retryKind } : {};
+        await storage.set({ [SETTINGS]: { enabled: true, ...active, ...throttle,
+          lastSentAt: previous.lastSentAt || null, stopReason: null, accountConflict: null, lastError: null },
+          [RECORDS]: records, [PAUSED]: false, [STOPPED]: null });
         if (version !== preferenceVersion) {
           await storage.set({ [PAUSED]: true });
           throw new Error('Import preferences changed while connecting.');
         }
         pauseRequested = false;
-        return { userId: active.userId };
+        return active;
       });
+    }
+
+    function stopReason(error) {
+      return [401, 419].includes(error.status) ? 'sign_in' : error.status === 409 ? 'account_changed' : 'permission';
+    }
+
+    function pendingRecords(records, userId) {
+      return records.filter((record) => record.status === 'local' && record.userId === userId);
+    }
+
+    async function snapshot() {
+      // A status read must remain available while a batch waits for the network.
+      const state = await load();
+      const { settings, records } = state;
+      const pending = pendingRecords(records, settings.userId);
+      const retryAt = settings.retryAt || null;
+      const retryKind = settings.retryKind || (retryAt ? 'rate_limit' : null);
+      let phase = !settings.userId ? 'not_connected' : !settings.enabled ? 'paused' : pending.length ? 'ready' : 'all_sent';
+      if (settings.enabled && activeBatch.length) phase = 'sending';
+      if (settings.enabled && retryAt && retryAt > now()) phase = retryKind === 'rate_limit' ? 'waiting' : 'retrying';
+      if ((!settings.enabled || pauseRequested) && activeBatch.length) phase = 'pausing';
+      if (settings.stopReason) phase = 'stopped';
+      return { ...state, queue: {
+        phase, stopReason: settings.stopReason || null, retryAt, retryKind,
+        pendingCount: pending.length, batchCount: activeBatch.length,
+        refusedCount: records.filter((record) => record.status === 'refused').length,
+        heldCount: records.filter((record) => record.status === 'local' && record.userId !== settings.userId).length,
+        remainingCount: pending.filter((record) => !activeBatch.includes(record.id)).length,
+        lastSentAt: settings.lastSentAt || null, accountName: settings.userName || (settings.userId ? String(settings.userId) : null),
+        accountConflict: settings.accountConflict || null,
+      } };
     }
 
     async function flush() {
@@ -173,47 +273,74 @@
       syncing = serial(async () => {
         const { settings, records } = await load();
         if (pauseRequested || !settings.enabled) return { sent: 0 };
-        const pending = records.filter((record) => record.status === 'local' && record.userId === settings.userId && !record.data.warnings.length);
+        const pending = pendingRecords(records, settings.userId);
         if (!pending.length) return { sent: 0 };
         const dueAt = Math.max(settings.nextSyncAt || 0, settings.retryAt || 0);
         if (dueAt > now()) return { sent: 0, nextSyncAt: dueAt };
-        const batch = pending.filter((record) => record.kind === pending[0].kind).slice(0, 20);
+        const ready = pending.filter((record) => eligibleAt(record) <= now());
+        if (!ready.length) return { sent: 0, nextSyncAt: Math.min(...pending.map(eligibleAt)) };
+        const batch = ready.filter((record) => record.kind === ready[0].kind).slice(0, 20);
+        activeBatch = batch.map((record) => record.id);
         try {
           const active = await client.session();
-          if (active.userId !== settings.userId) throw new Error('The signed-in account changed. Reconnect in settings.');
-          if (pauseRequested) return { sent: 0 };
+          if (active.userId !== settings.userId) throw FSD.importClient.accountMismatch(active);
+          if (pauseRequested || !(await load()).settings.enabled) return { sent: 0 };
           const results = await client.uploadBatch(batch.map((record) => ({ ...record,
             bytes: new TextEncoder().encode(JSON.stringify(record.data, null, 2)) })), settings.userId);
+          // Validate the entire acknowledgement before mutating any record.
+          if (!Array.isArray(results) || results.length !== batch.length
+            || new Set(results.map((result) => result.id)).size !== batch.length
+            || batch.some((record) => !results.some((result) => result.id === record.id
+              && Number.isSafeInteger(result.remoteId) && result.remoteId > 0))) {
+            throw new Error('Batch acknowledgement was incomplete.');
+          }
           for (const record of batch) {
             const result = results.find((item) => item.id === record.id);
-            if (!result) throw new Error('Batch acknowledgement was incomplete.');
-            record.status = 'received';
-            record.remoteId = result.remoteId;
-            record.error = null;
+            record.status = 'received'; record.remoteId = result.remoteId; record.error = null;
           }
           await saveRecords(records);
           const nextSyncAt = now() + 5000;
-          await storage.set({ [SETTINGS]: { ...settings, retryAt: null, retryAttempt: 0, lastError: null, nextSyncAt } });
+          await storage.set({ [SETTINGS]: { ...settings, retryAt: null, retryKind: null, retryAttempt: 0,
+            lastError: null, nextSyncAt, lastSentAt: new Date(now()).toISOString() } });
           return { sent: batch.length, ...(!pauseRequested && pending.length > batch.length ? { nextSyncAt } : {}) };
         } catch (error) {
           for (const record of batch) record.error = error.message;
-          await saveRecords(records);
-          if (error.status === 429) {
-            const retryAttempt = settings.retryAttempt || 0;
-            const retryAt = now() + FSD.importClient.retryDelay(error, retryAttempt, random);
-            await storage.set({ [SETTINGS]: { ...settings, retryAt, retryAttempt: retryAttempt + 1, lastError: 'Rate limited; waiting to retry automatically.' } });
-            return { sent: 0, ...(!pauseRequested ? { nextSyncAt: retryAt } : {}) };
+          let refused = 0;
+          if (error.status === 422) {
+            for (const [index, messages] of Object.entries(error.sourceErrors || {})) {
+              const record = batch[Number(index)];
+              if (!record || !Array.isArray(messages) || !messages.length) continue;
+              record.status = 'refused'; record.error = messages.join(' ').slice(0, 2000); refused += 1;
+            }
           }
-          await storage.set({ [SETTINGS]: { ...settings, enabled: false, lastError: error.message } });
-          throw error;
+          await saveRecords(records);
+          if ([401, 419, 403, 409].includes(error.status)) {
+            await stop(stopReason(error), { message: error.message, activeIdentity: error.activeIdentity });
+            throw error;
+          }
+          if (refused) {
+            const nextSyncAt = now() + 5000;
+            await storage.set({ [SETTINGS]: { ...settings, nextSyncAt, retryAt: null, retryKind: null,
+              retryAttempt: 0, lastError: null } });
+            return { sent: 0, refused, ...(!pauseRequested && pending.length > refused ? { nextSyncAt } : {}) };
+          }
+          // Sources are hash-idempotent, so lost/partial acknowledgements are
+          // safe to retry. Explicit document jobs use a separate retry policy.
+          const retryAttempt = settings.retryAttempt || 0;
+          const retryAt = now() + FSD.importClient.retryDelay(error, retryAttempt, random);
+          const retryKind = error.status === 429 ? 'rate_limit' : 'transient';
+          await storage.set({ [SETTINGS]: { ...settings, retryAt, retryKind,
+            retryAttempt: retryAttempt + 1, lastError: error.message } });
+          return { sent: 0, ...(!pauseRequested ? { nextSyncAt: retryAt } : {}) };
+        } finally {
+          activeBatch = [];
         }
       }).finally(() => { syncing = null; });
       return syncing;
     }
 
     return {
-      capture, captureGiftCardSnapshot, configure, flush,
-      snapshot: () => serial(load),
+      capture, captureGiftCardSnapshot, configure, flush, stop, snapshot,
       clear: () => serial(() => saveRecords([])),
     };
   }

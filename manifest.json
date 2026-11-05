@@ -10,6 +10,7 @@
       "providers/amz-gift-cards.js",
       "core/import-client.js",
       "core/import-store.js",
+      "core/import-status.js",
       "core/import-background.js",
       "background.js"
     ],

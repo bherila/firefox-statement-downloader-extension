@@ -25,7 +25,7 @@ The client uses the public HTTPS origin `https://pfifi.com`. Requests include br
 credentials, reject redirects, and have a 30-second timeout. Credentials and CSRF tokens
 never pass through AMZ content scripts. No identity-provider permissions are needed.
 
-`GET /api/finance/browser-import/session` returns `{user_id, csrf_token}` for the signed-in
+`GET /api/finance/browser-import/session` returns `{user_id, user_name, csrf_token}` for the signed-in
 owner. The response must not be cached. Receipt uploads require that owner's document-import
 permission and refuse a shared finance subject.
 
@@ -111,3 +111,11 @@ Future adapters can supply sources to the same background import client. Directl
 every institution's automatic downloads is deferred: a source type, target account, and
 successful-download acknowledgement need to be established for each provider. Returns and
 refunds remain the printed source evidence; no automatic transaction matching is performed.
+
+### Queue recovery and partial sources
+
+An indexed HTTP 422 validation response quarantines only the identified source as Refused, preserving its reason. Remaining sources continue in later spaced batches. Network failures, timeouts, 5xx responses, and ambiguous source acknowledgements retry with durable backoff; exact-byte source identity makes a retry safe. Authentication (401/419), permission (403), account change (409), and revoked destination access stop sending until resolved. Retry-After and retry deadlines cannot be bypassed by Sync now or reconnecting.
+
+Sources with warnings wait 60 seconds from first capture before sending as partial evidence. A complete receipt observed within that wait suppresses the older unsent partial upload without deleting its local evidence. Gift-card partials require matching page evidence before suppression so visiting a different activity page cannot hide an incomplete observation.
+
+Settings show the destination full name (falling back to its number), queue counts, one prioritized state, and the next action. A mismatched account on Resume requires an explicit recipient choice; previously pinned sources never move. Pause is acknowledged immediately, can show Pausing while the in-flight batch completes, and prevents new batches across restart.

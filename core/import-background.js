@@ -20,6 +20,11 @@
     .catch((error) => ({ ok: false, error: error.message || 'Import failed.' }));
   let syncTimer = null;
   async function flushAndSchedule() {
+    if (!await root.browser.permissions.contains({ origins: [`${FSD.importClient.ORIGIN}/*`] })) {
+      const { settings } = await store.snapshot();
+      if (settings.userId) await store.stop('access_revoked');
+      return { sent: 0 };
+    }
     const result = await store.flush();
     if (syncTimer !== null) root.clearTimeout(syncTimer);
     syncTimer = null;
@@ -70,8 +75,9 @@
       if (message.enabled && !await root.browser.permissions.contains({ origins: [`${FSD.importClient.ORIGIN}/*`] })) {
         throw new Error('Grant destination access before connecting.');
       }
-      await store.configure(message.enabled);
-      if (message.enabled) void sync();
+      const result = await store.configure(message.enabled, { useNewAccount: message.useNewAccount === true });
+      if (message.enabled && !result?.requiresAccountChoice) void sync();
+      return result;
     });
     if (message.action === 'syncImports') return safely(flushAndSchedule);
     if (message.action === 'clearImports') return safely(() => store.clear());
@@ -105,5 +111,12 @@
 
   root.browser.alarms.create('fsd-imports', { periodInMinutes: 1 });
   root.browser.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'fsd-imports') void sync(); });
+  root.browser.permissions.onRemoved?.addListener((removed) => {
+    if (removed.origins?.includes(`${FSD.importClient.ORIGIN}/*`)) {
+      if (syncTimer !== null) root.clearTimeout(syncTimer);
+      syncTimer = null;
+      void store.stop('access_revoked');
+    }
+  });
   void sync();
 })(globalThis);

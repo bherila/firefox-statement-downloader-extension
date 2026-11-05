@@ -9,6 +9,7 @@ const path = require('node:path');
 
 function harness() {
   let handler;
+  let removed;
   const calls = [];
   const store = {
     async capture(data) { calls.push(['capture', data]); return { id: 'example', count: 1 }; },
@@ -17,6 +18,7 @@ function harness() {
     async configure(value) { calls.push(['configure', value]); },
     async flush() { calls.push(['flush']); return { sent: 0 }; },
     async clear() { calls.push(['clear']); },
+    async stop(reason) { calls.push(['stop', reason]); },
   };
   const FSD = { amz, importStore: { createImportStore: () => store },
     importClient: { ORIGIN: 'https://pfifi.com', createImportClient: () => ({}) },
@@ -27,12 +29,12 @@ function harness() {
   const browser = {
     runtime: { getURL: (value) => `moz-extension://example/${value}`, onMessage: { addListener(fn) { handler = fn; } }, async openOptionsPage() {} },
     alarms: { create() {}, onAlarm: { addListener() {} } },
-    permissions: { async contains() { return true; } },
+    permissions: { async contains() { return true; }, onRemoved: { addListener(fn) { removed = fn; } } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../core/import-background.js'), 'utf8'), {
     FinancialStatementDownloader: FSD, browser, URL,
   });
-  return { handler, calls, browser, store };
+  return { handler, calls, browser, store, removed };
 }
 
 test('untrusted, private, iframe, and mismatched-order messages cannot capture data', async () => {
@@ -93,4 +95,31 @@ test('gift-card source capture accepts only loaded top-level balance pages and l
   const receipts = await handler({ action: 'listAmzReceipts' }, sender);
   assert.equal(receipts.receipts.length, 1);
   assert.equal(receipts.receipts[0].id, 'receipt');
+});
+
+test('revoked destination access stops sending, including a subsequent manual sync', async () => {
+  const { handler, calls, browser, removed } = harness();
+  await new Promise(setImmediate);
+  const before = calls.filter(([kind]) => kind === 'flush').length;
+  browser.permissions.contains = async () => false;
+  removed({ origins: ['https://pfifi.com/*'] });
+  await new Promise(setImmediate);
+  const result = await handler({ action: 'syncImports' }, { url: 'moz-extension://example/options.html' });
+  assert.equal(result.ok, true);
+  assert.ok(calls.some(([kind, reason]) => kind === 'stop' && reason === 'access_revoked'));
+  assert.equal(calls.filter(([kind]) => kind === 'flush').length, before);
+});
+
+test('account conflict is returned to settings without starting an automatic send', async () => {
+  const { handler, calls, store } = harness();
+  await new Promise(setImmediate);
+  const before = calls.filter(([kind]) => kind === 'flush').length;
+  store.configure = async (enabled, options) => {
+    assert.equal(enabled, true); assert.equal(options.useNewAccount, false);
+    return { requiresAccountChoice: true, accountConflict: { original: { userId: 1 }, active: { userId: 2 } } };
+  };
+  const result = await handler({ action: 'configureImports', enabled: true }, { url: 'moz-extension://example/options.html' });
+  assert.equal(result.requiresAccountChoice, true);
+  await new Promise(setImmediate);
+  assert.equal(calls.filter(([kind]) => kind === 'flush').length, before);
 });

@@ -3,28 +3,45 @@
   /** @returns {any} */
   const query = (selector) => root.document.querySelector(selector);
   let fileUploadPending = false;
+  let refreshing = 0;
+  let latestSnapshot = null;
+  function showAccounts(conflict) {
+    query('#account-choice').hidden = !conflict;
+    if (!conflict) return;
+    const name = root.FinancialStatementDownloader.importStatus.accountName;
+    query('#account-comparison').textContent = `Receipts are connected to ${name(conflict.original)}. pfifi.com is signed in as ${name(conflict.active)}. Nothing will send until you choose.`;
+  }
   async function message(action, extra = {}) {
     const result = await root.browser.runtime.sendMessage({ action, ...extra });
     if (!result || !result.ok) throw new Error(result?.error || 'Extension background is unavailable.');
     return result;
   }
   async function refresh() {
-    const { settings, records } = await message('importSnapshot');
-    query('#connection').textContent = settings.enabled ? `Connected to account ${settings.userId}. Automatic source imports enabled.${settings.retryAt > Date.now() ? ` Rate limited; retrying after ${new Date(settings.retryAt).toLocaleTimeString()}.` : ''}`
-      : settings.lastError ? `Imports paused: ${settings.lastError}` : 'Imports paused. Sources stay in this browser.';
+    const version = ++refreshing;
+    const snapshot = await message('importSnapshot');
+    if (version !== refreshing) return;
+    latestSnapshot = snapshot;
+    const { settings, records } = snapshot;
+    const state = root.FinancialStatementDownloader.importStatus.describe(snapshot);
+    query('#connection').textContent = state.text;
+    query('#account').textContent = state.detail || `Destination: ${state.name}`;
+    for (const [selector, visible] of [['#connect', state.connect], ['#resume', state.resume], ['#open-destination', state.open],
+      ['#review-accounts', state.review], ['#allow-access', state.allow], ['#disconnect', state.pause]]) query(selector).hidden = !visible;
+    query('#sync-wait').textContent = state.waitingUntil ? `Try again around ${state.waitingUntil}.` : '';
+    showAccounts(settings.accountConflict);
     const giftCards = records.filter((record) => record.kind === 'gift-card-snapshot').length;
     query('#counts').textContent = `${records.length - giftCards} receipt revisions · ${giftCards} gift-card pages · ${records.filter((record) => record.status === 'received').length} received by destination · ${records.filter((record) => record.data.warnings.length).length} need review locally`;
-    query('#sync').disabled = !settings.enabled;
-    query('#connect').disabled = settings.enabled;
-    query('#upload').disabled = !settings.enabled || fileUploadPending;
-    query('#disconnect').disabled = !settings.enabled;
+    query('#sync').disabled = !state.sync;
+    query('#upload').disabled = !settings.enabled || Boolean(settings.stopReason) || fileUploadPending;
+    query('#disconnect').disabled = false;
     query('#receipts').replaceChildren();
     for (const record of [...records].reverse()) {
       const item = root.document.createElement('li');
       const description = record.kind === 'gift-card-snapshot'
         ? `Gift-card balance $${Math.floor(record.data.balance_cents / 100).toLocaleString('en-US')}.${String(record.data.balance_cents % 100).padStart(2, '0')} · ${record.data.activities.length} activity rows · visible page`
         : `${record.data.order_id} · ${record.data.items.length} items`;
-      item.textContent = `${description} · ${record.status}${record.remoteId ? ` (document ${record.remoteId})` : ''}${record.userId && record.userId !== settings.userId ? ` · pinned to account ${record.userId}` : ''}${record.data.warnings.length ? ` · ${record.data.warnings.join(', ')}` : ''}${record.error ? ` · ${record.error}` : ''}`;
+      const status = record.status === 'refused' ? 'Refused' : record.status;
+      item.textContent = `${description} · ${status}${record.remoteId ? ` (document ${record.remoteId})` : ''}${record.userId && record.userId !== settings.userId ? ` · pinned to account ${record.userId}` : ''}${record.data.warnings.length ? ` · Partial: ${record.data.warnings.join(', ')}` : ''}${record.error ? ` · ${record.error}` : ''}`;
       query('#receipts').appendChild(item);
     }
   }
@@ -34,17 +51,31 @@
     catch (error) { query('#status').textContent = error.message; }
     await refresh().catch((error) => { query('#status').textContent = error.message; });
   }
-  query('#connect').addEventListener('click', () => {
+  function connect(useNewAccount = false) {
     // Request immediately in the user gesture, before asynchronous session I/O.
     const permission = root.browser.permissions.request({ origins: ['https://pfifi.com/*'] });
     void run(async () => {
       if (!await permission) throw new Error('Destination access was not granted. Sources remain local.');
-      await message('configureImports', { enabled: true });
-      return 'Connected. Saved sources will sync automatically.';
+      const result = await message('configureImports', { enabled: true, useNewAccount });
+      if (result.requiresAccountChoice) return 'Review accounts before sending. Existing receipts stay with their original account.';
+      return 'Connected. Saved receipts will send automatically.';
     });
-  });
+  }
+  query('#connect').addEventListener('click', () => connect());
+  query('#resume').addEventListener('click', () => connect());
+  query('#allow-access').addEventListener('click', () => connect());
+  query('#review-accounts').addEventListener('click', () => run(async () => {
+    const result = await message('configureImports', { enabled: true });
+    showAccounts(result.accountConflict || latestSnapshot?.settings.accountConflict);
+    return result.requiresAccountChoice ? 'Review accounts before sending.' : 'Connected.';
+  }));
+  query('#use-new-account').addEventListener('click', () => connect(true));
   query('#disconnect').addEventListener('click', () => run(async () => { await message('configureImports', { enabled: false }); return 'Imports paused.'; }));
-  query('#sync').addEventListener('click', () => run(async () => { const result = await message('syncImports'); return `${result.sent} sources sent.`; }));
+  query('#sync').addEventListener('click', () => run(async () => {
+    const result = await message('syncImports');
+    if (result.sent) return `${result.sent} receipts sent.`;
+    return 'Saved receipts are safe here. See the connection status for the next send.';
+  }));
   query('#export').addEventListener('click', () => run(async () => {
     const { records } = await message('importSnapshot');
     const data = new TextEncoder().encode(JSON.stringify({ schema: 'fsd.source-archive.v1',
@@ -79,7 +110,9 @@
       await refresh().catch((error) => { query('#status').textContent = error.message; });
     }
   });
-  void refresh().catch((error) => { query('#status').textContent = error.message; });
+  const update = () => refresh().catch((error) => { query('#status').textContent = error.message; });
+  void update();
+  if (root.setInterval) root.setInterval(update, 1000);
   root.browser.runtime.onMessage?.addListener((event) => {
     if (event.event === 'importRateLimited') query('#status').textContent = `Rate limited; retrying automatically after ${new Date(event.retryAt).toLocaleTimeString()}. Pause imports to stop retrying.`;
   });
