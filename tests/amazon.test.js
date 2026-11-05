@@ -72,6 +72,17 @@ test('missing prices and grand totals produce review warnings rather than invent
   assert.deepEqual(receipt.warnings, ['order_total_missing', 'item_price_missing']);
 });
 
+test('a gift-card-funded receipt keeps its items and funding line even when the remaining total is zero', () => {
+  const html = standard().replace('Promotion Applied:', 'Gift Card Applied:')
+    .replace('-$1.00', '-$24.68').replace('$23.68', '$0.00');
+  const receipt = parseReceipt(doc(html), url());
+  assert.equal(receipt.items.length, 1);
+  assert.equal(receipt.items[0].unit_price_cents, 1234);
+  assert.equal(receipt.charges.find((charge) => charge.label === 'Gift Card Applied:').amount_cents, -2468);
+  assert.equal(receipt.total_cents, 0);
+  assert.deepEqual(receipt.warnings, []);
+});
+
 test('Whole Foods receipts distinguish unit and line prices and keep purchase/delivery dates separate', () => {
   const receipt = parseReceipt(doc(`
     <h2 id="ufpo-order-status-primary">Purchased at EXAMPLE STORE</h2>
