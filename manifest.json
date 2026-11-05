@@ -7,6 +7,7 @@
     "scripts": [
       "core/runtime.js",
       "providers/amazon.js",
+      "providers/amazon-gift-cards.js",
       "core/import-client.js",
       "core/import-store.js",
       "core/import-background.js",
@@ -41,7 +42,9 @@
         "https://www.amazon.com/gp/css/order-history*",
         "https://www.amazon.com/your-orders/*",
         "https://www.amazon.com/fopo/order-details*",
-        "https://www.amazon.com/uff/your-account/order-details*"
+        "https://www.amazon.com/uff/your-account/order-details*",
+        "https://www.amazon.com/gc/balance*",
+        "https://www.amazon.com/gp/css/gc/balance*"
       ],
       "js": [
         "core/runtime.js",
@@ -55,6 +58,7 @@
         "providers/meritain.js",
         "providers/etrade.js",
         "providers/amazon.js",
+        "providers/amazon-gift-cards.js",
         "content.js"
       ],
       "run_at": "document_idle"
