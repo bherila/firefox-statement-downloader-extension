@@ -84,6 +84,46 @@ test('review warnings keep a receipt local while complete receipts can sync', as
   assert.equal(uploads.length, 0);
 });
 
+test('pause stops after the in-flight receipt and persists while that upload is still pending', async () => {
+  const { store, client, uploads, storage } = harness();
+  for (let i = 0; i < 3; i += 1) {
+    const data = receipt(); data.order_id = `100-1000000-${1000000 + i}`;
+    data.source_url = `https://www.amazon.com/your-orders/order-details?orderID=${data.order_id}`;
+    await store.capture(data);
+  }
+  await store.configure(true);
+  let release;
+  let started;
+  const held = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { started = resolve; });
+  const upload = client.upload;
+  client.upload = async (...args) => { const result = await upload(...args); started(); await held; return result; };
+  const syncing = store.flush();
+  await entered;
+  const pausing = store.configure(false);
+  await new Promise(setImmediate);
+  const restarted = importStore.createImportStore(storage, client);
+  const persisted = await restarted.snapshot();
+  release();
+  await syncing;
+  await pausing;
+  assert.equal(persisted.settings.enabled, false);
+  assert.equal(uploads.length, 1);
+  assert.equal((await store.snapshot()).records.filter((record) => record.status === 'local').length, 2);
+});
+
+test('a pause supersedes a connection whose session check has not completed', async () => {
+  const { store, client } = harness();
+  let release;
+  client.session = () => new Promise((resolve) => { release = resolve; });
+  const connecting = store.configure(true);
+  const superseded = assert.rejects(connecting, /preferences changed/i);
+  await store.configure(false);
+  release({ userId: 1 });
+  await superseded;
+  assert.equal((await store.snapshot()).settings.enabled, false);
+});
+
 test('archive draining shares a ten-per-minute budget across capture and alarm events', async () => {
   const { store, uploads } = harness();
   for (let i = 0; i < 12; i += 1) {

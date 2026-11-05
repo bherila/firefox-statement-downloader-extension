@@ -3,6 +3,7 @@
 
   const FSD = root.FinancialStatementDownloader || {};
   const SETTINGS = 'fsd:imports:settings';
+  const PAUSED = 'fsd:imports:paused';
   const RECORDS = 'fsd:imports:records';
   const MAX_RECORDS = 2000;
   const MAX_RECEIPT_BYTES = 512 * 1024;
@@ -17,14 +18,17 @@
     // queue. Never do content-script storage read/modify/write for the outbox.
     let tail = Promise.resolve();
     let syncing = null;
+    let pauseRequested = false;
+    let preferenceVersion = 0;
     const serial = (fn) => {
       const result = tail.then(fn);
       tail = result.catch(() => {});
       return result;
     };
     async function load() {
-      const saved = await storage.get([SETTINGS, RECORDS]);
-      return { settings: saved[SETTINGS] || { enabled: false, userId: null }, records: saved[RECORDS] || [] };
+      const saved = await storage.get([SETTINGS, RECORDS, PAUSED]);
+      const settings = saved[SETTINGS] || { enabled: false, userId: null };
+      return { settings: saved[PAUSED] ? { ...settings, enabled: false } : settings, records: saved[RECORDS] || [] };
     }
     const saveRecords = (records) => storage.set({ [RECORDS]: records });
 
@@ -91,17 +95,31 @@
     }
 
     async function configure(enabled) {
-      if (!enabled) return serial(async () => {
-        const { settings } = await load();
-        await storage.set({ [SETTINGS]: { ...settings, enabled: false } });
-      });
+      const version = ++preferenceVersion;
+      if (!enabled) {
+        // This gate has its own storage key: pausing must be effective and
+        // durable even while the record queue awaits an in-flight upload.
+        pauseRequested = true;
+        await storage.set({ [PAUSED]: true });
+        return serial(async () => {
+          const { settings } = await load();
+          await storage.set({ [SETTINGS]: { ...settings, enabled: false } });
+        });
+      }
       // Only settings UI can call this. Pin the recipient; a different login
       // never silently takes over previously collected private documents.
       const active = await client.session();
       return serial(async () => {
+        if (version !== preferenceVersion) throw new Error('Import preferences changed while connecting.');
         const { records } = await load();
+        if (version !== preferenceVersion) throw new Error('Import preferences changed while connecting.');
         for (const record of records) if (record.userId === null) record.userId = active.userId;
-        await storage.set({ [SETTINGS]: { enabled: true, userId: active.userId }, [RECORDS]: records });
+        await storage.set({ [SETTINGS]: { enabled: true, userId: active.userId }, [RECORDS]: records, [PAUSED]: false });
+        if (version !== preferenceVersion) {
+          await storage.set({ [PAUSED]: true });
+          throw new Error('Import preferences changed while connecting.');
+        }
+        pauseRequested = false;
         return { userId: active.userId };
       });
     }
@@ -110,7 +128,7 @@
       if (syncing) return syncing;
       syncing = serial(async () => {
         const { settings, records } = await load();
-        if (!settings.enabled) return { sent: 0 };
+        if (pauseRequested || !settings.enabled) return { sent: 0 };
         const pending = records.filter((record) => record.status === 'local' && record.userId === settings.userId && !record.data.warnings.length);
         if (!pending.length || (settings.nextSyncAt || 0) > Date.now()) return { sent: 0 };
         // Ten sources per minute, across capture events, startup, and alarms.
@@ -126,7 +144,7 @@
         }
         let sent = 0;
         for (const record of pending) {
-          if (sent >= 10) break;
+          if (pauseRequested || sent >= 10) break;
           try {
             const result = await client.upload({ ...record, bytes: new TextEncoder().encode(JSON.stringify(record.data, null, 2)) }, record.userId);
             record.status = 'received';
