@@ -79,6 +79,35 @@ test('rejects invalid receipts and unsafe money instead of queuing them', async 
   assert.equal((await store.snapshot()).records.length, 0);
 });
 
+test('code-shaped receipt text never reaches local storage, export, or upload', async () => {
+  // Deliberately synthetic examples, never redeemable codes from a page.
+  const codes = ['ABCD-123456-EFGH', 'ABCD-123456-EFGH5', 'abcd123456efgh', 'ABCD123456EFGH5'];
+  for (const field of ['title', 'status_text', 'seller', 'condition', 'label', 'order_date_text', 'delivery_date_text']) {
+    for (const code of codes) {
+      const { store, saved, uploads } = harness();
+      const raw = receipt();
+      if (['title', 'seller', 'condition'].includes(field)) raw.items[0][field] = `Example ${code}`;
+      else if (field === 'label') raw.charges[0].label = `Example ${code}`;
+      else raw[field] = `Example ${code}`;
+      await assert.rejects(store.capture(raw), { message: 'Receipt text may contain a redeemable code. Nothing was saved.' });
+      assert.equal(JSON.stringify(saved).includes(code), false);
+      assert.equal((await store.snapshot()).records.length, 0);
+      await store.configure(true); await store.flush();
+      assert.equal(uploads.length, 0);
+    }
+  }
+});
+
+test('ordinary receipt titles, identifiers, dates, and amounts remain as printed', async () => {
+  const { store } = harness();
+  const raw = receipt();
+  raw.items[0].title = 'EXAMPLE PRODUCT B000000000, 14 inches';
+  raw.items[0].seller = 'Example seller';
+  raw.items[0].condition = 'New';
+  await store.capture(raw);
+  assert.deepEqual((await store.snapshot()).records[0].data, raw);
+});
+
 test('connect explicitly pins local captures and uploads exactly once across overlapping syncs', async () => {
   const { store, uploads } = harness();
   await store.capture(receipt());

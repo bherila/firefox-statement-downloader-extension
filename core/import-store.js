@@ -133,6 +133,13 @@
       const optionalText = (value, max = 2000) => {
         if (value === null || value === undefined) return null;
         if (typeof value !== 'string' || value.length > max) throw new Error('Invalid receipt text.');
+        // Free-text cells can include a gift-card claim code. Reject the whole
+        // capture before hashing or writing it; never echo the matching text.
+        const tokens = value.match(/[a-z0-9]+(?:[-\u2010-\u2015][a-z0-9]+)*/gi) || [];
+        if (tokens.some((token) => /^[a-z0-9]{4}[-\u2010-\u2015][a-z0-9]{6}[-\u2010-\u2015][a-z0-9]{4,5}$/i.test(token)
+          || (/^[a-z0-9]{14,15}$/i.test(token) && /\d/.test(token)))) {
+          throw Object.assign(new Error('Receipt text may contain a redeemable code. Nothing was saved.'), { name: 'ReceiptPrivacyError' });
+        }
         return value;
       };
       const cents = (value) => {

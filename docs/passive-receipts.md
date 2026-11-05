@@ -64,6 +64,14 @@ The complete allowed fields are implemented in `core/import-store.js`. Unsupport
 are discarded locally and rejected by intake. Source metadata is untrusted receipt evidence.
 The client does not execute markup from it or embed its URLs as privileged requests.
 
+Before a new receipt is hashed or written, free-text cells are checked for claim-code
+shapes: grouped 4–6–4/5 alphanumeric tokens and compact 14/15-character tokens containing
+digits. A match refuses the entire capture, with a generic privacy explanation in the
+toolbar. The matched text is never included in an error, source, or upload. Ordinary
+printed values are unchanged; the check is conservative and can also refuse a product
+identifier with the same shape. This check applies to new captures, not previously
+stored sources.
+
 For explicit file uploads, `POST /api/genai/import/jobs` takes multipart `file`, `job_type`,
 and `expected_user_id`, with the same session/CSRF protection. Supported client job types:
 `finance_transactions`, `finance_payslip`, `utility_bill`, `equity_award`. The server validates
