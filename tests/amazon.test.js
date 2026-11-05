@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 const { parseHTML } = require('linkedom');
 require('../core/runtime.js');
+require('../core/storage.js');
+require('../core/batch.js');
 require('../providers/amazon.js');
 const provider = global.FinancialStatementDownloader.providers.amazon;
 const { money, pageKind, parseReceipt } = provider.helpers;
@@ -173,5 +175,29 @@ test('an observation during storage is captured after acknowledgement even when 
     assert.equal(saved.length, 2);
   } finally {
     delete global.document; delete global.location; delete global.browser;
+  }
+});
+
+test('the real provider and batch runner download a receipt once and record completion', async () => {
+  let downloads = 0;
+  const completed = new Set();
+  global.browser = { runtime: { async sendMessage(message) {
+    assert.equal(message.action, 'downloadData');
+    downloads += 1;
+    assert.equal(JSON.parse(new TextDecoder().decode(new Uint8Array(message.data))).schema, 'amazon.receipt.v1');
+    return { ok: true, downloadId: downloads };
+  } } };
+  const document = { id: 'example-source', title: 'Example receipt', category: 'receipt', filename: 'Receipts/Amazon/example.json',
+    metadata: { receipt: parseReceipt(doc(standard()), url()) } };
+  const storage = { async isDone(id) { return completed.has(id); }, async markDone(item) { completed.add(item.id); } };
+  try {
+    const summary = await global.FinancialStatementDownloader.runBatch({ provider,
+      options: { documents: [document], storage, checkDownloadHistory: false, delayMs: 0, retryDelayMs: 0 } });
+    assert.equal(downloads, 1);
+    assert.equal(summary.downloaded, 1);
+    assert.equal(summary.failed, 0);
+    assert.equal(completed.has(document.id), true);
+  } finally {
+    delete global.browser;
   }
 });

@@ -191,7 +191,7 @@
     },
     async downloadDocument(document) {
       const data = new TextEncoder().encode(JSON.stringify(document.metadata.receipt, null, 2));
-      return message('downloadData', { data: Array.from(data), filename: document.filename, contentType: 'application/json' });
+      return { data: Array.from(data), filename: document.filename, contentType: 'application/json' };
     },
     helpers: { pageKind, money, parseReceipt, captureCurrentPage },
   };
