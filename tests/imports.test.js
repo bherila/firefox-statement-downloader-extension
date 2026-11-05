@@ -18,6 +18,14 @@ function receipt() {
     charges: [{ label: 'Grand Total:', amount_cents: 1000 }], total_cents: 1000, warnings: [] };
 }
 
+function giftCardSnapshot() {
+  return { schema: 'amazon.gift-card-balance.v1', marketplace: 'amazon.com', currency: 'USD',
+    source_url: 'https://www.amazon.com/gc/balance', balance_cents: 1250,
+    activities: [{ date_text: 'January 2, 2026', activity_type: 'redemption', amount_cents: -750,
+      balance_after_cents: 1250, order_ids: ['100-1000000-1000000'] }],
+    has_previous_page: false, has_next_page: true, coverage: 'visible_page', warnings: [] };
+}
+
 function harness() {
   const saved = {};
   const storage = {
@@ -321,4 +329,67 @@ test('explicit-file 429 retry honors backoff and stops on pause without retrying
   await assert.rejects(importClient.withRateLimitRetry(async () => { uncertainSends += 1; throw new Error('Acknowledgement lost'); },
     { async wait() { assert.fail('Uncertain uploads must not automatically retry'); } }), /lost/);
   assert.equal(uncertainSends, 1);
+});
+
+test('gift-card sources preserve safe activity cells but discard descriptions, claim codes, and cursors', async () => {
+  const { store } = harness();
+  const raw = giftCardSnapshot();
+  raw.claim_code = 'EXAMPLE-CODE-DO-NOT-STORE';
+  raw.next = 'EXAMPLE_CURSOR';
+  raw.activities[0].description = 'Claim code: EXAMPLE-CODE-DO-NOT-STORE';
+  raw.activities[0].claim_code = 'EXAMPLE-CODE-DO-NOT-STORE';
+  await store.captureGiftCardSnapshot(raw);
+  await store.captureGiftCardSnapshot(giftCardSnapshot());
+  const { records } = await store.snapshot();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].kind, 'gift-card-snapshot');
+  assert.equal(records[0].data.balance_cents, 1250);
+  assert.deepEqual(records[0].data.activities[0].order_ids, ['100-1000000-1000000']);
+  assert.equal(JSON.stringify(records).includes('EXAMPLE-CODE'), false);
+  assert.equal(JSON.stringify(records).includes('EXAMPLE_CURSOR'), false);
+});
+
+test('gift-card revisions preserve repeated rows and validate balance/activity amounts', async () => {
+  const { store } = harness();
+  const snapshot = giftCardSnapshot();
+  snapshot.balance_cents = 0;
+  snapshot.activities.push(structuredClone(snapshot.activities[0]));
+  await store.captureGiftCardSnapshot(snapshot);
+  assert.equal((await store.snapshot()).records[0].data.activities.length, 2);
+  for (const change of [{ balance_cents: -1 }, { balance_cents: 1.1 }, { coverage: 'complete_history' }, { has_next_page: 'yes' }]) {
+    await assert.rejects(store.captureGiftCardSnapshot({ ...giftCardSnapshot(), ...change }));
+  }
+  const invalid = giftCardSnapshot(); invalid.activities[0].amount_cents = 1.1;
+  await assert.rejects(store.captureGiftCardSnapshot(invalid));
+});
+
+test('receipt and gift-card sources drain as separate bounded batches with the same pinned recipient', async () => {
+  const { store, clock, batches, uploads } = harness();
+  await store.capture(receipt());
+  await store.captureGiftCardSnapshot(giftCardSnapshot());
+  await store.configure(true);
+  const first = await store.flush();
+  assert.equal(first.sent, 1);
+  assert.equal(batches[0][0].kind, 'receipt');
+  clock.value = first.nextSyncAt;
+  await store.flush();
+  assert.equal(batches[1][0].kind, 'gift-card-snapshot');
+  assert.deepEqual(uploads.map((upload) => upload.owner), [1, 1]);
+  assert.equal((await store.snapshot()).records.every((record) => record.status === 'received'), true);
+});
+
+test('gift-card API batches use their own source endpoint and reject mixed batches before requests', async () => {
+  const requests = [];
+  const record = { id: 'c'.repeat(64), kind: 'gift-card-snapshot', filename: 'example-gift-card.json',
+    contentType: 'application/json', bytes: new TextEncoder().encode(JSON.stringify(giftCardSnapshot())) };
+  const client = importClient.createImportClient(async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, async json() { return url.endsWith('/session') ? { user_id: 1, csrf_token: 'synthetic-csrf' }
+      : { results: [{ sha256: record.id, document_id: 1, status: 'received', duplicate: false }] }; } };
+  });
+  await client.uploadBatch([record], 1);
+  assert.equal(requests[1].url, 'https://pfifi.com/api/finance/browser-import/gift-card-snapshots/batch');
+  const previous = requests.length;
+  await assert.rejects(client.uploadBatch([record, { ...record, kind: 'receipt' }], 1), /one supported source kind/);
+  assert.equal(requests.length, previous);
 });

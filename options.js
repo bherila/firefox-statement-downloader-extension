@@ -10,9 +10,10 @@
   }
   async function refresh() {
     const { settings, records } = await message('importSnapshot');
-    query('#connection').textContent = settings.enabled ? `Connected to account ${settings.userId}. Automatic receipt imports enabled.${settings.retryAt > Date.now() ? ` Rate limited; retrying after ${new Date(settings.retryAt).toLocaleTimeString()}.` : ''}`
-      : settings.lastError ? `Imports paused: ${settings.lastError}` : 'Imports paused. Receipts stay in this browser.';
-    query('#counts').textContent = `${records.length} saved revisions · ${records.filter((record) => record.status === 'received').length} received by destination · ${records.filter((record) => record.data.warnings.length).length} need review locally`;
+    query('#connection').textContent = settings.enabled ? `Connected to account ${settings.userId}. Automatic source imports enabled.${settings.retryAt > Date.now() ? ` Rate limited; retrying after ${new Date(settings.retryAt).toLocaleTimeString()}.` : ''}`
+      : settings.lastError ? `Imports paused: ${settings.lastError}` : 'Imports paused. Sources stay in this browser.';
+    const giftCards = records.filter((record) => record.kind === 'gift-card-snapshot').length;
+    query('#counts').textContent = `${records.length - giftCards} receipt revisions · ${giftCards} gift-card pages · ${records.filter((record) => record.status === 'received').length} received by destination · ${records.filter((record) => record.data.warnings.length).length} need review locally`;
     query('#sync').disabled = !settings.enabled;
     query('#connect').disabled = settings.enabled;
     query('#upload').disabled = !settings.enabled || fileUploadPending;
@@ -20,7 +21,10 @@
     query('#receipts').replaceChildren();
     for (const record of [...records].reverse()) {
       const item = root.document.createElement('li');
-      item.textContent = `${record.data.order_id} · ${record.data.items.length} items · ${record.status}${record.remoteId ? ` (document ${record.remoteId})` : ''}${record.userId && record.userId !== settings.userId ? ` · pinned to account ${record.userId}` : ''}${record.data.warnings.length ? ` · ${record.data.warnings.join(', ')}` : ''}${record.error ? ` · ${record.error}` : ''}`;
+      const description = record.kind === 'gift-card-snapshot'
+        ? `Gift-card balance $${Math.floor(record.data.balance_cents / 100).toLocaleString('en-US')}.${String(record.data.balance_cents % 100).padStart(2, '0')} · ${record.data.activities.length} activity rows · visible page`
+        : `${record.data.order_id} · ${record.data.items.length} items`;
+      item.textContent = `${description} · ${record.status}${record.remoteId ? ` (document ${record.remoteId})` : ''}${record.userId && record.userId !== settings.userId ? ` · pinned to account ${record.userId}` : ''}${record.data.warnings.length ? ` · ${record.data.warnings.join(', ')}` : ''}${record.error ? ` · ${record.error}` : ''}`;
       query('#receipts').appendChild(item);
     }
   }
@@ -34,22 +38,24 @@
     // Request immediately in the user gesture, before asynchronous session I/O.
     const permission = root.browser.permissions.request({ origins: ['https://pfifi.com/*'] });
     void run(async () => {
-      if (!await permission) throw new Error('Destination access was not granted. Receipts remain local.');
+      if (!await permission) throw new Error('Destination access was not granted. Sources remain local.');
       await message('configureImports', { enabled: true });
-      return 'Connected. Saved receipts will sync automatically.';
+      return 'Connected. Saved sources will sync automatically.';
     });
   });
   query('#disconnect').addEventListener('click', () => run(async () => { await message('configureImports', { enabled: false }); return 'Imports paused.'; }));
-  query('#sync').addEventListener('click', () => run(async () => { const result = await message('syncImports'); return `${result.sent} receipts sent.`; }));
+  query('#sync').addEventListener('click', () => run(async () => { const result = await message('syncImports'); return `${result.sent} sources sent.`; }));
   query('#export').addEventListener('click', () => run(async () => {
     const { records } = await message('importSnapshot');
-    const data = new TextEncoder().encode(JSON.stringify({ schema: 'fsd.receipt-archive.v1', receipts: records.map(({ data }) => data) }, null, 2));
-    await message('downloadData', { data: Array.from(data), filename: 'Receipts/amazon-receipts.json', contentType: 'application/json' });
-    return 'Receipt archive downloaded.';
+    const data = new TextEncoder().encode(JSON.stringify({ schema: 'fsd.source-archive.v1',
+      receipts: records.filter((record) => record.kind !== 'gift-card-snapshot').map(({ data }) => data),
+      gift_card_snapshots: records.filter((record) => record.kind === 'gift-card-snapshot').map(({ data }) => data) }, null, 2));
+    await message('downloadData', { data: Array.from(data), filename: 'Receipts/amazon-sources.json', contentType: 'application/json' });
+    return 'Source archive downloaded.';
   }));
   query('#clear').addEventListener('click', () => {
-    if (root.confirm('Clear all locally saved receipts and upload history? Export an archive first. This does not delete destination documents.')) {
-      void run(async () => { await message('clearImports'); return 'Local receipts cleared.'; });
+    if (root.confirm('Clear all locally saved sources and upload history? Export an archive first. This does not delete destination documents.')) {
+      void run(async () => { await message('clearImports'); return 'Local sources cleared.'; });
     }
   });
   query('#upload').addEventListener('click', async () => {

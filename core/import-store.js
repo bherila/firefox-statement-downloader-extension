@@ -6,7 +6,7 @@
   const PAUSED = 'fsd:imports:paused';
   const RECORDS = 'fsd:imports:records';
   const MAX_RECORDS = 2000;
-  const MAX_RECEIPT_BYTES = 512 * 1024;
+  const MAX_SOURCE_BYTES = 512 * 1024;
 
   async function hash(bytes) {
     return Array.from(new Uint8Array(await root.crypto.subtle.digest('SHA-256', bytes)))
@@ -76,17 +76,59 @@
         total_cents: cents(receipt.total_cents),
         warnings: Array.isArray(receipt.warnings) ? receipt.warnings.map((warning) => optionalText(warning, 100)).slice(0, 50) : [],
       };
+      return saveSource(data, 'receipt', 'amazon');
+    }
+
+    async function captureGiftCardSnapshot(snapshot) {
+      if (!snapshot || snapshot.schema !== 'amazon.gift-card-balance.v1' || snapshot.marketplace !== 'amazon.com'
+        || snapshot.currency !== 'USD' || snapshot.source_url !== 'https://www.amazon.com/gc/balance'
+        || !Number.isSafeInteger(snapshot.balance_cents) || snapshot.balance_cents < 0
+        || !Array.isArray(snapshot.activities) || snapshot.activities.length > 1000
+        || typeof snapshot.has_previous_page !== 'boolean' || typeof snapshot.has_next_page !== 'boolean'
+        || snapshot.coverage !== 'visible_page' || !Array.isArray(snapshot.warnings) || snapshot.warnings.length > 50) {
+        throw new Error('Invalid Amazon gift-card snapshot.');
+      }
+      const data = {
+        schema: snapshot.schema, marketplace: snapshot.marketplace, currency: snapshot.currency,
+        source_url: snapshot.source_url, balance_cents: snapshot.balance_cents,
+        activities: snapshot.activities.map((activity) => {
+          if (typeof activity.date_text !== 'string' || !activity.date_text.trim() || activity.date_text.length > 300
+            || !['redemption', 'load', 'refund', 'adjustment', 'unknown'].includes(activity.activity_type)
+            || !Number.isSafeInteger(activity.amount_cents)
+            || (activity.balance_after_cents !== null && (!Number.isSafeInteger(activity.balance_after_cents) || activity.balance_after_cents < 0))
+            || !Array.isArray(activity.order_ids) || activity.order_ids.length > 100
+            || activity.order_ids.some((orderId) => typeof orderId !== 'string' || !/^\d{3}-\d{7}-\d{7}$/.test(orderId))) {
+            throw new Error('Invalid Amazon gift-card activity.');
+          }
+          // Load descriptions can contain redeemable claim codes. Store only
+          // these typed cells and order references, never a raw description.
+          return { date_text: activity.date_text, activity_type: activity.activity_type,
+            amount_cents: activity.amount_cents, balance_after_cents: activity.balance_after_cents,
+            order_ids: [...activity.order_ids] };
+        }),
+        has_previous_page: snapshot.has_previous_page, has_next_page: snapshot.has_next_page,
+        coverage: snapshot.coverage,
+        warnings: snapshot.warnings.map((warning) => {
+          if (typeof warning !== 'string' || !/^[a-z][a-z0-9_]{0,99}$/.test(warning)) throw new Error('Invalid source warning.');
+          return warning;
+        }),
+      };
+      return saveSource(data, 'gift-card-snapshot', 'amazon-gift-cards');
+    }
+
+    async function saveSource(data, kind, provider) {
       const bytes = new TextEncoder().encode(JSON.stringify(data, null, 2));
-      if (bytes.length > MAX_RECEIPT_BYTES) throw new Error('Receipt is too large to save.');
+      if (bytes.length > MAX_SOURCE_BYTES) throw new Error('Source is too large to save.');
       const id = await hash(bytes);
       return serial(async () => {
         const { settings, records } = await load();
         // Same bytes are a no-op; later changes to an order become a new source
         // revision. The first observation time lives outside the hashed bytes.
         if (!records.some((record) => record.id === id)) {
-          if (records.length >= MAX_RECORDS) throw new Error('Receipt storage is full. Export and clear receipts in settings.');
-          records.push({ id, kind: 'receipt', provider: 'amazon', data,
-            filename: `amazon-${data.order_id}-${id.slice(0, 12)}.json`, contentType: 'application/json',
+          if (records.length >= MAX_RECORDS) throw new Error('Source storage is full. Export and clear sources in settings.');
+          const prefix = kind === 'receipt' ? `amazon-${data.order_id}` : 'amazon-gift-card-balance';
+          records.push({ id, kind, provider, data,
+            filename: `${prefix}-${id.slice(0, 12)}.json`, contentType: 'application/json',
             createdAt: new Date().toISOString(), userId: settings.userId, status: 'local' });
           await saveRecords(records);
         }
@@ -135,7 +177,7 @@
         if (!pending.length) return { sent: 0 };
         const dueAt = Math.max(settings.nextSyncAt || 0, settings.retryAt || 0);
         if (dueAt > now()) return { sent: 0, nextSyncAt: dueAt };
-        const batch = pending.slice(0, 20);
+        const batch = pending.filter((record) => record.kind === pending[0].kind).slice(0, 20);
         try {
           const active = await client.session();
           if (active.userId !== settings.userId) throw new Error('The signed-in account changed. Reconnect in settings.');
@@ -170,7 +212,7 @@
     }
 
     return {
-      capture, configure, flush,
+      capture, captureGiftCardSnapshot, configure, flush,
       snapshot: () => serial(load),
       clear: () => serial(() => saveRecords([])),
     };

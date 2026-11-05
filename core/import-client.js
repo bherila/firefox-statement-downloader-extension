@@ -84,23 +84,29 @@
       form.append('file', new Blob([record.bytes], { type: record.contentType }), record.filename);
       form.append('sha256', record.id);
       form.append('expected_user_id', String(expectedUserId));
-      const receipt = record.kind === 'receipt';
-      if (!receipt) {
+      const source = ['receipt', 'gift-card-snapshot'].includes(record.kind);
+      if (!source) {
         if (!JOB_TYPES.includes(record.jobType)) throw new Error('Unsupported import job type.');
         form.append('job_type', record.jobType);
       }
       // Both intake endpoints validate the expected recipient against the
       // request's authenticated user before storing any source bytes.
-      const result = await request(receipt ? '/api/finance/browser-import/receipts' : '/api/genai/import/jobs', {
+      const path = record.kind === 'gift-card-snapshot' ? '/api/finance/browser-import/gift-card-snapshots'
+        : source ? '/api/finance/browser-import/receipts' : '/api/genai/import/jobs';
+      const result = await request(path, {
         method: 'POST', headers: { 'X-CSRF-TOKEN': active.csrfToken }, body: form,
       });
-      const remoteId = receipt ? result.document_id : result.job_id;
+      const remoteId = source ? result.document_id : result.job_id;
       if (!Number.isSafeInteger(remoteId) || remoteId < 1) throw new Error('Import acknowledgement was incomplete. Check the destination before retrying.');
       return { remoteId, status: result.status || 'received', duplicate: result.duplicate === true || result.deduplicated === true };
     }
 
     async function uploadBatch(records, expectedUserId) {
       if (!Array.isArray(records) || !records.length || records.length > 20) throw new Error('A receipt batch must contain 1–20 sources.');
+      const kind = records[0].kind || 'receipt';
+      if (!['receipt', 'gift-card-snapshot'].includes(kind) || records.some((record) => (record.kind || 'receipt') !== kind)) {
+        throw new Error('A batch must contain one supported source kind.');
+      }
       const active = await session();
       if (active.userId !== expectedUserId) throw new Error('The signed-in account changed. Reconnect in settings.');
       const form = new FormData();
@@ -109,7 +115,9 @@
         form.append('files[]', new Blob([record.bytes], { type: record.contentType }), record.filename);
         form.append('sha256[]', record.id);
       }
-      const result = await request('/api/finance/browser-import/receipts/batch', {
+      const path = kind === 'gift-card-snapshot' ? '/api/finance/browser-import/gift-card-snapshots/batch'
+        : '/api/finance/browser-import/receipts/batch';
+      const result = await request(path, {
         method: 'POST', headers: { 'X-CSRF-TOKEN': active.csrfToken }, body: form,
       });
       const expected = new Set(records.map((record) => record.id));

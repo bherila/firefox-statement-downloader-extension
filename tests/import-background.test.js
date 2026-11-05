@@ -11,6 +11,7 @@ function harness() {
   const calls = [];
   const store = {
     async capture(data) { calls.push(['capture', data]); return { id: 'example', count: 1 }; },
+    async captureGiftCardSnapshot(data) { calls.push(['captureGiftCard', data]); return { id: 'example-gift-card', count: 1 }; },
     async snapshot() { return { settings: { enabled: true, userId: 1 }, records: [] }; },
     async configure(value) { calls.push(['configure', value]); },
     async flush() { calls.push(['flush']); return { sent: 0 }; },
@@ -30,7 +31,7 @@ function harness() {
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../core/import-background.js'), 'utf8'), {
     FinancialStatementDownloader: FSD, browser, URL,
   });
-  return { handler, calls, browser };
+  return { handler, calls, browser, store };
 }
 
 test('untrusted, private, iframe, and mismatched-order messages cannot capture data', async () => {
@@ -72,4 +73,23 @@ test('manifest includes passive provider, background dependencies, optional API 
   assert.ok(manifest.content_scripts[0].js.includes('providers/amazon.js'));
   const build = require('../package.json').scripts.build;
   for (const file of ['options.html', 'options.js', 'options.css']) assert.ok(build.includes(file));
+});
+
+test('gift-card source capture accepts only loaded top-level balance pages and lists its own source kind', async () => {
+  const { handler, calls, store } = harness();
+  const message = { action: 'captureAmazonGiftCardSnapshot', snapshot: { schema: 'amazon.gift-card-balance.v1' } };
+  const sender = { url: 'https://www.amazon.com/gc/balance?next=EXAMPLE', frameId: 0, tab: { id: 1 } };
+  for (const override of [{ url: 'https://example.test/gc/balance' }, { url: 'https://www.amazon.com/your-orders/order-details' },
+    { frameId: 1 }, { tab: { id: 1, incognito: true } }]) {
+    assert.equal(handler(message, { ...sender, ...override }), undefined);
+  }
+  assert.equal((await handler(message, sender)).ok, true);
+  assert.equal(calls.filter(([kind]) => kind === 'captureGiftCard').length, 1);
+  store.snapshot = async () => ({ settings: {}, records: [{ id: 'receipt', kind: 'receipt', data: {} }, { id: 'gift', kind: 'gift-card-snapshot', data: {} }] });
+  const gift = await handler({ action: 'listAmazonGiftCardSnapshots' }, sender);
+  assert.equal(gift.snapshots.length, 1);
+  assert.equal(gift.snapshots[0].id, 'gift');
+  const receipts = await handler({ action: 'listAmazonReceipts' }, sender);
+  assert.equal(receipts.receipts.length, 1);
+  assert.equal(receipts.receipts[0].id, 'receipt');
 });
