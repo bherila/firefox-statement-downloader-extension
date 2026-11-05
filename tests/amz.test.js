@@ -2,15 +2,16 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { amz } = require('../scripts/build.js');
 const { parseHTML } = require('linkedom');
 require('../core/runtime.js');
 require('../core/storage.js');
 require('../core/batch.js');
-require('../providers/amazon.js');
-const provider = global.FinancialStatementDownloader.providers.amazon;
+require('../providers/amz.js');
+const provider = global.FinancialStatementDownloader.providers.amz;
 const { money, pageKind, parseReceipt } = provider.helpers;
 const ORDER = '100-1000000-1000000';
-const url = (path = '/your-orders/order-details') => `https://www.amazon.com${path}?orderID=${ORDER}&ref=example`;
+const url = (path = '/your-orders/order-details') => `${amz.origin}${path}?orderID=${ORDER}&ref=example`;
 const doc = (html) => parseHTML(`<html><body>${html}</body></html>`).document;
 const standard = (items = 1) => `
   <div data-component="orderDate">January 2, 2026</div>
@@ -28,13 +29,13 @@ const standard = (items = 1) => `
     <div class="od-line-item-row"><div class="od-line-item-row-label">Grand Total:</div><div class="od-line-item-row-content">$23.68</div></div>
   </div>`;
 
-test('claims only supported Amazon US history and detail URLs', () => {
-  assert.equal(pageKind('https://www.amazon.com/gp/css/order-history'), 'history');
-  assert.equal(pageKind('https://www.amazon.com/your-orders/orders?page=2'), 'history');
+test('claims only supported Amz US history and detail URLs', () => {
+  assert.equal(pageKind(`${amz.origin}/gp/css/order-history`), 'history');
+  assert.equal(pageKind(`${amz.origin}/your-orders/orders?page=2`), 'history');
   assert.equal(pageKind(url()), 'detail');
-  assert.equal(pageKind('https://www.amazon.com.evil.example.test/your-orders/order-details'), null);
-  assert.equal(pageKind('https://www.amazon.com/ap/signin'), null);
-  assert.equal(pageKind('https://www.amazon.co.uk/your-orders/orders'), null);
+  assert.equal(pageKind(`${amz.origin}.evil.example.test/your-orders/order-details`), null);
+  assert.equal(pageKind(`${amz.origin}/ap/signin`), null);
+  assert.equal(pageKind(`${amz.origin.replace('.com', '.co.uk')}/your-orders/orders`), null);
 });
 
 test('money uses exact signed integer cents and refuses ambiguous or foreign amounts', () => {
@@ -50,7 +51,7 @@ test('standard receipts keep line items, labeled adjustments, and canonical prod
   assert.equal(receipt.items[0].unit_price_cents, 1234);
   assert.equal(receipt.items[0].line_total_cents, null);
   assert.equal(receipt.items[0].quantity, 2);
-  assert.equal(receipt.items[0].product_url, 'https://www.amazon.com/dp/B000000000');
+  assert.equal(receipt.items[0].product_url, `${amz.origin}/dp/B000000000`);
   assert.equal(receipt.charges[1].amount_cents, -100);
   assert.equal(receipt.total_cents, 2368);
   assert.equal(receipt.order_date_text, 'January 2, 2026');
@@ -59,7 +60,7 @@ test('standard receipts keep line items, labeled adjustments, and canonical prod
 });
 
 test('refuses history summaries, sign-in pages, missing totals sections, and transitioning order identities', () => {
-  assert.equal(parseReceipt(doc(standard()), 'https://www.amazon.com/your-orders/orders'), null);
+  assert.equal(parseReceipt(doc(standard()), `${amz.origin}/your-orders/orders`), null);
   assert.equal(parseReceipt(doc('<form>Sign in</form>'), url()), null);
   assert.equal(parseReceipt(doc(standard().replace(ORDER, '200-2000000-2000000')), url()), null);
   assert.equal(parseReceipt(doc('<div data-component="purchasedItems">Incomplete</div>'), url()), null);
@@ -157,7 +158,7 @@ test('passive observation saves each stable page once, including after a failed 
     await provider.observePage();
     await provider.observePage();
     assert.equal(saved.length, 1);
-    assert.equal(saved[0].action, 'captureAmazonReceipt');
+    assert.equal(saved[0].action, 'captureAmzReceipt');
   } finally {
     delete global.document; delete global.location; delete global.browser;
   }
@@ -195,10 +196,10 @@ test('the real provider and batch runner download a receipt once and record comp
   global.browser = { runtime: { async sendMessage(message) {
     assert.equal(message.action, 'downloadData');
     downloads += 1;
-    assert.equal(JSON.parse(new TextDecoder().decode(new Uint8Array(message.data))).schema, 'amazon.receipt.v1');
+    assert.equal(JSON.parse(new TextDecoder().decode(new Uint8Array(message.data))).schema, amz.receiptSchema);
     return { ok: true, downloadId: downloads };
   } } };
-  const document = { id: 'example-source', title: 'Example receipt', category: 'receipt', filename: 'Receipts/Amazon/example.json',
+  const document = { id: 'example-source', title: 'Example receipt', category: 'receipt', filename: 'Receipts/AMZ/example.json',
     metadata: { receipt: parseReceipt(doc(standard()), url()) } };
   const storage = { async isDone(id) { return completed.has(id); }, async markDone(item) { completed.add(item.id); } };
   try {

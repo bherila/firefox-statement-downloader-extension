@@ -50,7 +50,7 @@
     const data = new TextEncoder().encode(JSON.stringify({ schema: 'fsd.source-archive.v1',
       receipts: records.filter((record) => record.kind !== 'gift-card-snapshot').map(({ data }) => data),
       gift_card_snapshots: records.filter((record) => record.kind === 'gift-card-snapshot').map(({ data }) => data) }, null, 2));
-    await message('downloadData', { data: Array.from(data), filename: 'Receipts/amazon-sources.json', contentType: 'application/json' });
+    await message('downloadData', { data: Array.from(data), filename: 'Receipts/amz-sources.json', contentType: 'application/json' });
     return 'Source archive downloaded.';
   }));
   query('#clear').addEventListener('click', () => {

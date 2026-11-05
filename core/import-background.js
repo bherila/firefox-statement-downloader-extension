@@ -6,12 +6,12 @@
   const client = FSD.importClient.createImportClient();
   const OPTIONS_URL = root.browser.runtime.getURL('options.html');
   const isOptions = (sender) => sender.url === OPTIONS_URL && !sender.tab?.incognito;
-  const isAmazon = (sender) => Boolean(sender.tab && !sender.tab.incognito && sender.frameId === 0
-    && (FSD.providers.amazon.helpers.pageKind(sender.url) || isGiftCardPage(sender.url)));
+  const isAmz = (sender) => Boolean(sender.tab && !sender.tab.incognito && sender.frameId === 0
+    && (FSD.providers.amz.helpers.pageKind(sender.url) || isGiftCardPage(sender.url)));
   function isGiftCardPage(value) {
     try {
       const url = new URL(value);
-      return url.origin === 'https://www.amazon.com' && ['/gp/css/gc/balance', '/gc/balance'].includes(url.pathname);
+      return url.origin === FSD.amz.origin && ['/gp/css/gc/balance', '/gc/balance'].includes(url.pathname);
     } catch (error) {
       return false;
     }
@@ -35,10 +35,10 @@
 
   root.browser.runtime.onMessage.addListener((message, sender) => {
     if (!message || typeof message.action !== 'string') return undefined;
-    if (message.action === 'captureAmazonReceipt' && isAmazon(sender)) {
+    if (message.action === 'captureAmzReceipt' && isAmz(sender)) {
       return safely(async () => {
         const source = new URL(sender.url);
-        if (FSD.providers.amazon.helpers.pageKind(sender.url) !== 'detail'
+        if (FSD.providers.amz.helpers.pageKind(sender.url) !== 'detail'
           || source.searchParams.get('orderID') !== message.receipt?.order_id) throw new Error('Receipt does not match the open order.');
         const result = await store.capture(message.receipt);
         // Independent of the content script lifetime, so leaving the page does
@@ -47,20 +47,20 @@
         return result;
       });
     }
-    if (message.action === 'listAmazonReceipts' && isAmazon(sender)) {
+    if (message.action === 'listAmzReceipts' && isAmz(sender)) {
       return safely(async () => ({ receipts: (await store.snapshot()).records.filter((record) => record.kind === 'receipt').map(({ id, data }) => ({ id, data })) }));
     }
-    if (message.action === 'captureAmazonGiftCardSnapshot' && isAmazon(sender) && isGiftCardPage(sender.url)) {
+    if (message.action === 'captureAmzGiftCardSnapshot' && isAmz(sender) && isGiftCardPage(sender.url)) {
       return safely(async () => {
         const result = await store.captureGiftCardSnapshot(message.snapshot);
         void sync();
         return result;
       });
     }
-    if (message.action === 'listAmazonGiftCardSnapshots' && isAmazon(sender) && isGiftCardPage(sender.url)) {
+    if (message.action === 'listAmzGiftCardSnapshots' && isAmz(sender) && isGiftCardPage(sender.url)) {
       return safely(async () => ({ snapshots: (await store.snapshot()).records.filter((record) => record.kind === 'gift-card-snapshot').map(({ id, data }) => ({ id, data })) }));
     }
-    if (message.action === 'openImportOptions' && isAmazon(sender)) {
+    if (message.action === 'openImportOptions' && isAmz(sender)) {
       return safely(async () => { await root.browser.runtime.openOptionsPage(); });
     }
     if (!isOptions(sender)) return undefined;

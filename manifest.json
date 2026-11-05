@@ -6,8 +6,8 @@
   "background": {
     "scripts": [
       "core/runtime.js",
-      "providers/amazon.js",
-      "providers/amazon-gift-cards.js",
+      "providers/amz.js",
+      "providers/amz-gift-cards.js",
       "core/import-client.js",
       "core/import-store.js",
       "core/import-background.js",
@@ -17,7 +17,7 @@
   },
   "permissions": [
     "https://accounts.coinbase.com/*",
-    "https://gdax-reports.s3.amazonaws.com/*",
+    "https://__REPORTS_STORAGE_HOST__/*",
     "https://digitalservices.fidelity.com/*",
     "https://dpservice.fidelity.com/*",
     "https://workplaceservices.fidelity.com/*",
@@ -27,7 +27,7 @@
     "webRequest",
     "downloads",
     "storage",
-    "https://www.amazon.com/*",
+    "https://__AMZ_HOST__/*",
     "alarms"
   ],
   "content_scripts": [
@@ -39,12 +39,12 @@
         "https://connect.meritain.com/Member/MemberClaim/ClaimSummary*",
         "https://us.etrade.com/etx/pxy/accountdocs*",
         "https://workplaceservices.fidelity.com/mybenefits/savings2/*",
-        "https://www.amazon.com/gp/css/order-history*",
-        "https://www.amazon.com/your-orders/*",
-        "https://www.amazon.com/fopo/order-details*",
-        "https://www.amazon.com/uff/your-account/order-details*",
-        "https://www.amazon.com/gc/balance*",
-        "https://www.amazon.com/gp/css/gc/balance*"
+        "https://__AMZ_HOST__/gp/css/order-history*",
+        "https://__AMZ_HOST__/your-orders/*",
+        "https://__AMZ_HOST__/fopo/order-details*",
+        "https://__AMZ_HOST__/uff/your-account/order-details*",
+        "https://__AMZ_HOST__/gc/balance*",
+        "https://__AMZ_HOST__/gp/css/gc/balance*"
       ],
       "js": [
         "core/runtime.js",
@@ -57,8 +57,8 @@
         "providers/netbenefits.js",
         "providers/meritain.js",
         "providers/etrade.js",
-        "providers/amazon.js",
-        "providers/amazon-gift-cards.js",
+        "providers/amz.js",
+        "providers/amz-gift-cards.js",
         "content.js"
       ],
       "run_at": "document_idle"

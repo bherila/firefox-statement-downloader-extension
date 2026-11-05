@@ -1,4 +1,4 @@
-# Passive Amazon source capture and reusable imports
+# Passive AMZ source capture and reusable imports
 
 ## Plan and implementation
 
@@ -23,7 +23,7 @@
 
 The client uses the public HTTPS origin `https://pfifi.com`. Requests include browser-managed
 credentials, reject redirects, and have a 30-second timeout. Credentials and CSRF tokens
-never pass through Amazon content scripts. No identity-provider permissions are needed.
+never pass through AMZ content scripts. No identity-provider permissions are needed.
 
 `GET /api/finance/browser-import/session` returns `{user_id, csrf_token}` for the signed-in
 owner. The response must not be cached. Receipt uploads require that owner's document-import
@@ -50,7 +50,7 @@ cannot be bypassed by pausing/reconnecting. Alarms and timers recheck the deadli
 requesting a session or sending bytes. Pause immediately prevents starting another batch,
 including after a restart; the batch already in flight may complete.
 
-Receipt schema `amazon.receipt.v1`:
+The receipt wire schema is defined by `FSD.amz.receiptSchema` in `core/runtime.js`:
 
 - `marketplace`, `currency`, `order_id`, `layout`, canonical `source_url`;
 - nullable `order_date_text`, `status_text`, and `delivery_date_text` as printed;
@@ -84,11 +84,11 @@ multipart uploads, sender boundaries, optional permissions, batch hash associati
 Private browsing is excluded.
 
 Saved-page validation checks item counts against each layout's source item containers. It
-does not prove future Amazon layouts will remain stable or that all historical orders have
+does not prove future AMZ layouts will remain stable or that all historical orders have
 been visited. No live navigation or authenticated purchase-account requests are part of tests.
 
 Gift-card balance/activity pages now use the same background queue. Their individual
-`amazon.gift-card-balance.v1` JSON sources upload to
+JSON sources use `FSD.amz.giftCardSchema` from the shared runtime configuration and upload to
 `POST /api/finance/browser-import/gift-card-snapshots/batch`, using the same indexed
 `files[]`, `sha256[]`, expected-user, CSRF, batch limit, and hash-associated result contract.
 The singular `/api/finance/browser-import/gift-card-snapshots` endpoint also accepts one

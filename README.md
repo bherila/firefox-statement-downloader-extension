@@ -1,7 +1,7 @@
 # Financial Statement Downloader for Firefox
 
 A Firefox extension for bulk-downloading financial documents and passively collecting
-Amazon receipts and gift-card balance/activity pages. It runs inside your browser, with optional uploads to Planfina using
+AMZ receipts and gift-card balance/activity pages. It runs inside your browser, with optional uploads to Planfina using
 your existing signed-in session.
 
 ## Provider status
@@ -14,17 +14,17 @@ your existing signed-in session.
 | E*TRADE | Statements, trade confirmations, tax forms, and correspondence | Needs live verification |
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
 | Meritain Health | Medical and Rx EOB PDFs | Supported |
-| Amazon US | Standard, Whole Foods in-store, and Fresh itemized receipts | Passive capture; validated against saved pages |
-| Amazon US gift cards | Current balance and activity on each page you view | Passive capture; claim codes excluded |
+| AMZ US | Standard, Whole Foods in-store, and Fresh itemized receipts | Passive capture; validated against saved pages |
+| AMZ US gift cards | Current balance and activity on each page you view | Passive capture; claim codes excluded |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
 
-## Amazon receipts and optional imports
+## AMZ receipts and optional imports
 
-Browse Amazon's order history normally and open order details yourself. The extension
+Browse AMZ's order history normally and open order details yourself. The extension
 automatically saves item descriptions, ASINs when present, quantities and units, prices,
-labeled charges, totals, and printed dates/status. It makes **no Amazon requests**, follows
+labeled charges, totals, and printed dates/status. It makes **no AMZ requests**, follows
 no links, and does not open orders or invoices. Order-history summaries alone do not contain
 the full receipt and are not saved as detailed receipts. Only US English layouts are supported.
 
@@ -69,7 +69,7 @@ Collected sources and JSON exports distinguish receipts from gift-card snapshots
 use the same opt-in destination, recipient pinning, bounded batches, backoff, and pause
 controls. These are unreviewed source observations. Gift-card wallet balances, automatic
 receipt matching, split-funding reconciliation, and expiration tracking require future
-reviewed workflows. See [docs/amazon-gift-cards.md](docs/amazon-gift-cards.md).
+reviewed workflows. See [docs/amz-gift-cards.md](docs/amz-gift-cards.md).
 
 Retail Fidelity, NetBenefits, and the credit card are three separate archives, not one.
 The retail document APIs return nothing for workplace or card accounts even though both
@@ -158,10 +158,11 @@ legacy Coinbase settings are migrated into provider-scoped extension storage.
 ## Temporary installation
 
 1. Clone or download this repository.
-2. In Firefox, open `about:debugging#/runtime/this-firefox`.
-3. Select **Load Temporary Add-on…** and choose `manifest.json` from the repository root.
-4. Sign in to a supported institution and navigate to its statements/documents page.
-5. Use the injected **Bulk download** button.
+2. Run `pnpm install --frozen-lockfile` and `pnpm build`.
+3. In Firefox, open `about:debugging#/runtime/this-firefox`.
+4. Select **Load Temporary Add-on…** and choose `dist/unpacked/manifest.json` or the ZIP in `dist/`.
+5. Sign in to a supported institution and navigate to its statements/documents page.
+6. Use the injected **Bulk download** button.
 
 Temporary add-ons are unloaded when Firefox restarts.
 
@@ -178,7 +179,9 @@ pnpm test
 pnpm build
 ```
 
-The build is written to `dist/firefox-statement-downloader-extension.zip`. CI runs linting,
+The build writes `dist/unpacked/` and `dist/firefox-statement-downloader-extension.zip`.
+The root manifest is a template; the build expands exact provider hosts from the shared
+runtime configuration. Load the generated manifest when testing the add-on. CI runs linting,
 type-checking, unit tests, and a verified package build for pull requests and pushes to
 `main`.
 

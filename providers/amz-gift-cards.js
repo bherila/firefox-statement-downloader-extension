@@ -1,4 +1,4 @@
-(function initializeAmazonGiftCards(root) {
+(function initializeAmzGiftCards(root) {
   'use strict';
 
   const FSD = root.FinancialStatementDownloader || {};
@@ -9,7 +9,7 @@
   function pageKind(value) {
     try {
       const url = new URL(value);
-      return url.origin === 'https://www.amazon.com' && PATHS.has(url.pathname) ? 'balance' : null;
+      return url.origin === FSD.amz.origin && PATHS.has(url.pathname) ? 'balance' : null;
     } catch (error) {
       return null;
     }
@@ -38,9 +38,9 @@
     const ids = new Set(text(cell).match(/\b\d{3}-\d{7}-\d{7}\b/g) || []);
     for (const link of cell.querySelectorAll('a[href]')) {
       try {
-        const url = new URL(link.getAttribute('href'), 'https://www.amazon.com');
+        const url = new URL(link.getAttribute('href'), FSD.amz.origin);
         const id = url.searchParams.get('orderID');
-        if (url.origin === 'https://www.amazon.com' && ORDER_ID.test(id || '')) ids.add(id);
+        if (url.origin === FSD.amz.origin && ORDER_ID.test(id || '')) ids.add(id);
       } catch (error) {
         // An unrelated or malformed link does not identify an order.
       }
@@ -74,8 +74,8 @@
     }
     const pagination = doc.querySelector('#gc-balance-ledger-pagination');
     return {
-      schema: 'amazon.gift-card-balance.v1', marketplace: 'amazon.com', currency: 'USD',
-      source_url: 'https://www.amazon.com/gc/balance', balance_cents: balance, activities,
+      schema: FSD.amz.giftCardSchema, marketplace: FSD.amz.marketplace, currency: 'USD',
+      source_url: `${FSD.amz.origin}/gc/balance`, balance_cents: balance, activities,
       has_previous_page: Boolean(pagination?.querySelector('li:not(.a-last):not(.a-disabled) a')),
       has_next_page: Boolean(pagination?.querySelector('li.a-last:not(.a-disabled) a')),
       coverage: 'visible_page', warnings: unparsed ? ['unparsed_activity_rows'] : [],
@@ -99,7 +99,7 @@
     if (serialized === lastSnapshot) return;
     capturing = true;
     try {
-      await message('captureAmazonGiftCardSnapshot', { snapshot });
+      await message('captureAmzGiftCardSnapshot', { snapshot });
       lastSnapshot = serialized;
     } finally {
       capturing = false;
@@ -112,7 +112,7 @@
 
   /** @type {FsdProvider} */
   const provider = {
-    id: 'amazon-gift-cards', label: 'Amazon gift-card balance and activity', requiresDateRange: false,
+    id: 'amz-gift-cards', label: 'AMZ gift-card balance and activity', requiresDateRange: false,
     observePage: captureCurrentPage,
     isSupportedPage: () => Boolean(pageKind(root.location.href)),
     findMountPoint: () => root.document.querySelector('#gc-balance-table h1, h1'),
@@ -128,10 +128,10 @@
     async readOptions() { return {}; },
     async discoverDocuments() {
       await captureCurrentPage();
-      const result = await message('listAmazonGiftCardSnapshots');
-      return result.snapshots.map((snapshot) => FSD.normalizeDocument('amazon-gift-cards', {
-        id: snapshot.id, title: `Amazon gift-card activity (${snapshot.data.activities.length} rows)`,
-        category: 'gift-card-balance', filename: `GiftCards/Amazon/${snapshot.id.slice(0, 12)}.json`,
+      const result = await message('listAmzGiftCardSnapshots');
+      return result.snapshots.map((snapshot) => FSD.normalizeDocument('amz-gift-cards', {
+        id: snapshot.id, title: `AMZ gift-card activity (${snapshot.data.activities.length} rows)`,
+        category: 'gift-card-balance', filename: `GiftCards/AMZ/${snapshot.id.slice(0, 12)}.json`,
         metadata: { snapshot: snapshot.data },
       }));
     },
@@ -142,6 +142,6 @@
     helpers: { pageKind, money, activityType, parseSnapshot, captureCurrentPage },
   };
 
-  FSD.providers = Object.assign(FSD.providers || {}, { amazonGiftCards: provider });
+  FSD.providers = Object.assign(FSD.providers || {}, { amzGiftCards: provider });
   root.FinancialStatementDownloader = FSD;
 })(globalThis);

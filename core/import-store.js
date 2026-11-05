@@ -35,12 +35,12 @@
     async function capture(receipt) {
       // Reconstruct an allowlisted payload; never retain DOM/headers/addresses
       // or arbitrary extra fields from a provider message.
-      if (!receipt || receipt.schema !== 'amazon.receipt.v1' || receipt.marketplace !== 'amazon.com'
+      if (!receipt || receipt.schema !== FSD.amz.receiptSchema || receipt.marketplace !== FSD.amz.marketplace
         || receipt.currency !== 'USD' || !/^\d{3}-\d{7}-\d{7}$/.test(receipt.order_id || '')
         || !['standard', 'whole_foods', 'fresh'].includes(receipt.layout)
         || !Array.isArray(receipt.items) || !receipt.items.length || receipt.items.length > 500
         || !Array.isArray(receipt.charges) || !receipt.charges.length || receipt.charges.length > 100) {
-        throw new Error('Invalid Amazon receipt.');
+        throw new Error('Invalid AMZ receipt.');
       }
       const optionalText = (value, max = 2000) => {
         if (value === null || value === undefined) return null;
@@ -53,12 +53,12 @@
         return value;
       };
       const source = new URL(receipt.source_url);
-      if (FSD.providers.amazon.helpers.pageKind(source.href) !== 'detail'
+      if (FSD.providers.amz.helpers.pageKind(source.href) !== 'detail'
         || source.searchParams.get('orderID') !== receipt.order_id) throw new Error('Invalid receipt source.');
       const data = {
         schema: receipt.schema, marketplace: receipt.marketplace, currency: receipt.currency,
         order_id: receipt.order_id, layout: receipt.layout,
-        source_url: `https://www.amazon.com${source.pathname}?orderID=${receipt.order_id}`,
+        source_url: `${FSD.amz.origin}${source.pathname}?orderID=${receipt.order_id}`,
         order_date_text: optionalText(receipt.order_date_text, 300), status_text: optionalText(receipt.status_text, 1000),
         delivery_date_text: optionalText(receipt.delivery_date_text, 300),
         items: receipt.items.map((item) => {
@@ -67,7 +67,7 @@
           if (item.asin !== null && !/^[A-Z0-9]{10}$/.test(item.asin)) throw new Error('Invalid ASIN.');
           if (item.quantity !== null && (!Number.isFinite(item.quantity) || item.quantity <= 0 || item.quantity > 100000)) throw new Error('Invalid receipt quantity.');
           if (item.quantity_unit !== null && !['each', 'lb', 'oz'].includes(item.quantity_unit)) throw new Error('Invalid receipt quantity unit.');
-          return { title, asin: item.asin, product_url: item.asin ? `https://www.amazon.com/dp/${item.asin}` : null,
+          return { title, asin: item.asin, product_url: item.asin ? `${FSD.amz.origin}/dp/${item.asin}` : null,
             quantity: item.quantity, quantity_unit: item.quantity_unit,
             unit_price_cents: cents(item.unit_price_cents), line_total_cents: cents(item.line_total_cents),
             seller: optionalText(item.seller, 1000), condition: optionalText(item.condition, 1000) };
@@ -76,17 +76,17 @@
         total_cents: cents(receipt.total_cents),
         warnings: Array.isArray(receipt.warnings) ? receipt.warnings.map((warning) => optionalText(warning, 100)).slice(0, 50) : [],
       };
-      return saveSource(data, 'receipt', 'amazon');
+      return saveSource(data, 'receipt', 'amz');
     }
 
     async function captureGiftCardSnapshot(snapshot) {
-      if (!snapshot || snapshot.schema !== 'amazon.gift-card-balance.v1' || snapshot.marketplace !== 'amazon.com'
-        || snapshot.currency !== 'USD' || snapshot.source_url !== 'https://www.amazon.com/gc/balance'
+      if (!snapshot || snapshot.schema !== FSD.amz.giftCardSchema || snapshot.marketplace !== FSD.amz.marketplace
+        || snapshot.currency !== 'USD' || snapshot.source_url !== `${FSD.amz.origin}/gc/balance`
         || !Number.isSafeInteger(snapshot.balance_cents) || snapshot.balance_cents < 0
         || !Array.isArray(snapshot.activities) || snapshot.activities.length > 1000
         || typeof snapshot.has_previous_page !== 'boolean' || typeof snapshot.has_next_page !== 'boolean'
         || snapshot.coverage !== 'visible_page' || !Array.isArray(snapshot.warnings) || snapshot.warnings.length > 50) {
-        throw new Error('Invalid Amazon gift-card snapshot.');
+        throw new Error('Invalid AMZ gift-card snapshot.');
       }
       const data = {
         schema: snapshot.schema, marketplace: snapshot.marketplace, currency: snapshot.currency,
@@ -98,7 +98,7 @@
             || (activity.balance_after_cents !== null && (!Number.isSafeInteger(activity.balance_after_cents) || activity.balance_after_cents < 0))
             || !Array.isArray(activity.order_ids) || activity.order_ids.length > 100
             || activity.order_ids.some((orderId) => typeof orderId !== 'string' || !/^\d{3}-\d{7}-\d{7}$/.test(orderId))) {
-            throw new Error('Invalid Amazon gift-card activity.');
+            throw new Error('Invalid AMZ gift-card activity.');
           }
           // Load descriptions can contain redeemable claim codes. Store only
           // these typed cells and order references, never a raw description.
@@ -113,7 +113,7 @@
           return warning;
         }),
       };
-      return saveSource(data, 'gift-card-snapshot', 'amazon-gift-cards');
+      return saveSource(data, 'gift-card-snapshot', 'amz-gift-cards');
     }
 
     async function saveSource(data, kind, provider) {
@@ -126,7 +126,7 @@
         // revision. The first observation time lives outside the hashed bytes.
         if (!records.some((record) => record.id === id)) {
           if (records.length >= MAX_RECORDS) throw new Error('Source storage is full. Export and clear sources in settings.');
-          const prefix = kind === 'receipt' ? `amazon-${data.order_id}` : 'amazon-gift-card-balance';
+          const prefix = kind === 'receipt' ? `amz-${data.order_id}` : 'amz-gift-card-balance';
           records.push({ id, kind, provider, data,
             filename: `${prefix}-${id.slice(0, 12)}.json`, contentType: 'application/json',
             createdAt: new Date().toISOString(), userId: settings.userId, status: 'local' });

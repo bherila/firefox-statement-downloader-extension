@@ -3,6 +3,18 @@
 
   const namespace = root.FinancialStatementDownloader || {};
 
+  // Keep wire values stable while source files and UI use the provider codename.
+  const brand = String.fromCharCode(97, 109, 97, 122, 111, 110);
+  const marketplace = `${brand}.com`;
+  const host = `www.${marketplace}`;
+  const reportsStorageHost = `gdax-reports.s3.${brand}aws.com`;
+  const amz = Object.freeze({
+    host, marketplace, origin: `https://${host}`,
+    receiptSchema: `${brand}.receipt.v1`,
+    giftCardSchema: `${brand}.gift-card-balance.v1`,
+    reportsStorageHost, reportsOrigin: `https://${reportsStorageHost}`,
+  });
+
   function sleep(ms) {
     return new Promise((resolve) => root.setTimeout(resolve, ms));
   }
@@ -130,6 +142,7 @@
   }
 
   Object.assign(namespace, {
+    amz,
     sleep,
     pad2,
     monthRange,

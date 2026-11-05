@@ -9,7 +9,7 @@
   "description": "Firefox extension that bulk-downloads statements and related financial documents from supported institutions.",
   "scripts": {
     "prepare": "git config core.hooksPath scripts/githooks || true",
-    "build": "mkdir -p dist && zip -FS -X dist/firefox-statement-downloader-extension.zip manifest.json background.js content.js options.html options.js options.css core/*.js providers/*.js README.md docs/*.md",
+    "build": "node scripts/build.js",
     "check": "node --check background.js && node --check content.js && for file in core/*.js providers/*.js; do node --check \"$file\"; done",
     "lint": "eslint .",
     "test": "node --test tests/*.test.js",

@@ -1,4 +1,4 @@
-(function initializeAmazon(root) {
+(function initializeAmz(root) {
   'use strict';
 
   const FSD = root.FinancialStatementDownloader || {};
@@ -11,7 +11,7 @@
   function pageKind(value) {
     try {
       const url = new URL(value);
-      if (url.origin !== 'https://www.amazon.com') return null;
+      if (url.origin !== FSD.amz.origin) return null;
       if (DETAIL_PATHS.has(url.pathname)) return 'detail';
       return HISTORY_PATHS.has(url.pathname) ? 'history' : null;
     } catch (error) {
@@ -41,7 +41,7 @@
     if (!title) return null;
     const href = link.getAttribute('href') || '';
     const asin = (href.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})(?:[/?]|$)/) || [])[1] || null;
-    return { title, asin, product_url: asin ? `https://www.amazon.com/dp/${asin}` : null };
+    return { title, asin, product_url: asin ? `${FSD.amz.origin}/dp/${asin}` : null };
   }
 
   function parseReceipt(doc, value) {
@@ -124,7 +124,7 @@
     const orderDate = read(doc, component('orderDate')) || (/purchased|ordered|placed/i.test(secondaryStatus) ? secondaryStatus : null);
     const status = read(doc, component('shipmentStatus')) || read(doc, '#ufpo-order-status-primary');
     return {
-      schema: 'amazon.receipt.v1', marketplace: 'amazon.com', currency: 'USD', order_id: orderId, layout,
+      schema: FSD.amz.receiptSchema, marketplace: FSD.amz.marketplace, currency: 'USD', order_id: orderId, layout,
       source_url: `${url.origin}${url.pathname}?orderID=${orderId}`,
       order_date_text: orderDate,
       status_text: [status, secondaryStatus].filter(Boolean).join(' · ') || null,
@@ -153,7 +153,7 @@
     if (serialized === lastReceipt) return;
     capturing = true;
     try {
-      await message('captureAmazonReceipt', { receipt });
+      await message('captureAmzReceipt', { receipt });
       lastReceipt = serialized;
     } finally {
       capturing = false;
@@ -166,7 +166,7 @@
 
   /** @type {FsdProvider} */
   const provider = {
-    id: 'amazon', label: 'Amazon receipts', requiresDateRange: false,
+    id: 'amz', label: 'AMZ receipts', requiresDateRange: false,
     observePage: captureCurrentPage,
     isSupportedPage: () => Boolean(pageKind(root.location.href)),
     findMountPoint: () => root.document.querySelector(`${component('orderDetailsTitle')}, h1`),
@@ -182,10 +182,10 @@
     async readOptions() { return {}; },
     async discoverDocuments() {
       await captureCurrentPage();
-      const result = await message('listAmazonReceipts');
-      return result.receipts.map((receipt) => FSD.normalizeDocument('amazon', {
-        id: receipt.id, title: `Amazon order ${receipt.data.order_id}`, category: 'receipt',
-        filename: `Receipts/Amazon/${receipt.data.order_id}-${receipt.id.slice(0, 12)}.json`,
+      const result = await message('listAmzReceipts');
+      return result.receipts.map((receipt) => FSD.normalizeDocument('amz', {
+        id: receipt.id, title: `AMZ order ${receipt.data.order_id}`, category: 'receipt',
+        filename: `Receipts/AMZ/${receipt.data.order_id}-${receipt.id.slice(0, 12)}.json`,
         metadata: { receipt: receipt.data },
       }));
     },
@@ -196,6 +196,6 @@
     helpers: { pageKind, money, parseReceipt, captureCurrentPage },
   };
 
-  FSD.providers = Object.assign(FSD.providers || {}, { amazon: provider });
+  FSD.providers = Object.assign(FSD.providers || {}, { amz: provider });
   root.FinancialStatementDownloader = FSD;
 })(globalThis);

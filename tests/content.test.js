@@ -33,7 +33,7 @@ test('content reconciliation automatically observes a supported page without dis
   let observed = 0;
   const provider = { isSupportedPage: () => true, async observePage() { observed += 1; } };
   const context = {
-    FinancialStatementDownloader: { providers: { amazon: provider }, mountProvider: () => ({ ensureMounted() {} }) },
+    FinancialStatementDownloader: { providers: { amz: provider }, mountProvider: () => ({ ensureMounted() {} }) },
     document: { documentElement: {} }, setTimeout: (callback) => scheduled.push(callback),
     MutationObserver: class { observe() {} }, addEventListener() {},
   };
@@ -50,7 +50,7 @@ test('a text-only receipt mutation schedules a fresh passive observation', async
   let observed = 0;
   const provider = { isSupportedPage: () => true, async observePage() { observed += 1; } };
   const context = {
-    FinancialStatementDownloader: { providers: { amazon: provider }, mountProvider: () => ({ ensureMounted() {} }) },
+    FinancialStatementDownloader: { providers: { amz: provider }, mountProvider: () => ({ ensureMounted() {} }) },
     document: { documentElement: {} }, setTimeout: (callback) => scheduled.push(callback),
     MutationObserver: class {
       constructor(callback) { mutationCallback = callback; }

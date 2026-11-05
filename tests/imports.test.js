@@ -2,25 +2,26 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { amz } = require('../scripts/build.js');
 require('../core/runtime.js');
-require('../providers/amazon.js');
+require('../providers/amz.js');
 require('../core/import-client.js');
 require('../core/import-store.js');
 const { importStore, importClient } = global.FinancialStatementDownloader;
 
 function receipt() {
-  return { schema: 'amazon.receipt.v1', marketplace: 'amazon.com', currency: 'USD',
+  return { schema: amz.receiptSchema, marketplace: amz.marketplace, currency: 'USD',
     order_id: '100-1000000-1000000', layout: 'standard',
-    source_url: 'https://www.amazon.com/your-orders/order-details?orderID=100-1000000-1000000',
+    source_url: `${amz.origin}/your-orders/order-details?orderID=100-1000000-1000000`,
     order_date_text: 'January 2, 2026', status_text: 'Delivered', delivery_date_text: null,
-    items: [{ title: 'EXAMPLE PRODUCT', asin: 'B000000000', product_url: 'https://www.amazon.com/dp/B000000000',
+    items: [{ title: 'EXAMPLE PRODUCT', asin: 'B000000000', product_url: `${amz.origin}/dp/B000000000`,
       quantity: 1, quantity_unit: 'each', unit_price_cents: 1000, line_total_cents: null, seller: null, condition: null }],
     charges: [{ label: 'Grand Total:', amount_cents: 1000 }], total_cents: 1000, warnings: [] };
 }
 
 function giftCardSnapshot() {
-  return { schema: 'amazon.gift-card-balance.v1', marketplace: 'amazon.com', currency: 'USD',
-    source_url: 'https://www.amazon.com/gc/balance', balance_cents: 1250,
+  return { schema: amz.giftCardSchema, marketplace: amz.marketplace, currency: 'USD',
+    source_url: `${amz.origin}/gc/balance`, balance_cents: 1250,
     activities: [{ date_text: 'January 2, 2026', activity_type: 'redemption', amount_cents: -750,
       balance_after_cents: 1250, order_ids: ['100-1000000-1000000'] }],
     has_previous_page: false, has_next_page: true, coverage: 'visible_page', warnings: [] };
@@ -102,7 +103,7 @@ test('pause stops after the in-flight batch and persists while that upload is st
   const { store, client, uploads, storage } = harness();
   for (let i = 0; i < 21; i += 1) {
     const data = receipt(); data.order_id = `100-1000000-${1000000 + i}`;
-    data.source_url = `https://www.amazon.com/your-orders/order-details?orderID=${data.order_id}`;
+    data.source_url = `${amz.origin}/your-orders/order-details?orderID=${data.order_id}`;
     await store.capture(data);
   }
   await store.configure(true);
@@ -142,7 +143,7 @@ test('archive draining shares bounded batches and spacing across capture and ala
   const { store, uploads } = harness();
   for (let i = 0; i < 22; i += 1) {
     const data = receipt(); data.order_id = `100-1000000-${1000000 + i}`;
-    data.source_url = `https://www.amazon.com/your-orders/order-details?orderID=${data.order_id}`;
+    data.source_url = `${amz.origin}/your-orders/order-details?orderID=${data.order_id}`;
     await store.capture(data);
   }
   await store.configure(true); await store.flush(); await store.flush();
@@ -392,4 +393,13 @@ test('gift-card API batches use their own source endpoint and reject mixed batch
   const previous = requests.length;
   await assert.rejects(client.uploadBatch([record, { ...record, kind: 'receipt' }], 1), /one supported source kind/);
   assert.equal(requests.length, previous);
+});
+
+test('provider naming preserves the existing wire bytes and stable source identities', async () => {
+  const { store } = harness();
+  const savedReceipt = await store.capture(receipt());
+  const savedBalance = await store.captureGiftCardSnapshot(giftCardSnapshot());
+  // These digests predate the codename change and cover schema, origins, and field order.
+  assert.equal(savedReceipt.id, 'd2c52b0d4c332082fb4549571c9298b626b454daba42c02b4117ffb850d01cd8');
+  assert.equal(savedBalance.id, '17153ee1f6c78bf276d3b6af856f2b97b04c6c1046d90482f2991329cc578fa6');
 });
