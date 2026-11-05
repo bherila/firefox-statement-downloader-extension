@@ -1,7 +1,7 @@
 # Financial Statement Downloader for Firefox
 
 A Firefox extension for bulk-downloading financial documents and passively collecting
-Amazon receipts. It runs inside your browser, with optional uploads to Planfina using
+Amazon receipts and gift-card balance/activity pages. It runs inside your browser, with optional uploads to Planfina using
 your existing signed-in session.
 
 ## Provider status
@@ -15,6 +15,7 @@ your existing signed-in session.
 | Fidelity NetBenefits | Generated plan statements and transaction history | Untested against a live plan |
 | Meritain Health | Medical and Rx EOB PDFs | Supported |
 | Amazon US | Standard, Whole Foods in-store, and Fresh itemized receipts | Passive capture; validated against saved pages |
+| Amazon US gift cards | Current balance and activity on each page you view | Passive capture; claim codes excluded |
 | Fidelity Credit Card | Card statements | Not supported |
 
 Providers deliberately use separate adapters rather than a shared model.
@@ -56,6 +57,19 @@ export before clearing it. Clearing also removes local upload history. Raw HTML,
 shipping addresses, payment credentials, and the HAR used for calibration are not stored.
 
 The API contract, design, and remaining scope are in [docs/passive-receipts.md](docs/passive-receipts.md).
+
+Gift-card balance pages at `/gc/balance` and `/gp/css/gc/balance` are captured the same
+way. Browse their Previous/Next links yourself; each visited page saves its reported
+balance, activity dates/types, signed amounts, per-row closing balances, linked order IDs,
+and pagination indicators. Raw descriptions are excluded because they can contain
+redeemable claim codes. Each snapshot explicitly covers only the page you viewed.
+Repeated activity rows are preserved; no transaction IDs are invented.
+
+Collected sources and JSON exports distinguish receipts from gift-card snapshots. Both
+use the same opt-in destination, recipient pinning, bounded batches, backoff, and pause
+controls. These are unreviewed source observations. Gift-card wallet balances, automatic
+receipt matching, split-funding reconciliation, and expiration tracking require future
+reviewed workflows. See [docs/amazon-gift-cards.md](docs/amazon-gift-cards.md).
 
 Retail Fidelity, NetBenefits, and the credit card are three separate archives, not one.
 The retail document APIs return nothing for workplace or card accounts even though both

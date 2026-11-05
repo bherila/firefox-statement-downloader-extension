@@ -1,4 +1,4 @@
-# Passive receipt capture and reusable imports
+# Passive Amazon source capture and reusable imports
 
 ## Plan and implementation
 
@@ -86,6 +86,26 @@ Private browsing is excluded.
 Saved-page validation checks item counts against each layout's source item containers. It
 does not prove future Amazon layouts will remain stable or that all historical orders have
 been visited. No live navigation or authenticated purchase-account requests are part of tests.
+
+Gift-card balance/activity pages now use the same background queue. Their individual
+`amazon.gift-card-balance.v1` JSON sources upload to
+`POST /api/finance/browser-import/gift-card-snapshots/batch`, using the same indexed
+`files[]`, `sha256[]`, expected-user, CSRF, batch limit, and hash-associated result contract.
+The singular `/api/finance/browser-import/gift-card-snapshots` endpoint also accepts one
+`file`, `sha256`, and `expected_user_id`. Each batch contains one source kind; the scheduler
+drains both kinds with shared rate-limit backoff and recipient/pause controls.
+
+Gift-card sources contain the reported current balance, typed activity cells, linked order
+IDs, and observed pagination flags. Only `coverage: "visible_page"` is supported. Raw
+descriptions, claim codes, account credentials, and pagination cursors are discarded before
+storage. There is no invented activity identifier or deduplication of indistinguishable
+rows. First-observed time is local capture metadata; remote document creation time is
+intake time, not a statement that a balance was observed at that exact time.
+
+The archive export now uses `fsd.source-archive.v1`, with separate `receipts` and
+`gift_card_snapshots` arrays. Each entry is an individual supported source. Split an array
+into individual JSON files before staging for its corresponding API/MCP import. Source
+evidence is independent of a bank transaction or wallet ledger.
 
 Future adapters can supply sources to the same background import client. Directly uploading
 every institution's automatic downloads is deferred: a source type, target account, and
