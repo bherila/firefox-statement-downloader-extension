@@ -4,6 +4,7 @@
   const FSD = root.FinancialStatementDownloader;
   const store = FSD.importStore.createImportStore();
   const client = FSD.importClient.createImportClient();
+  const surface = FSD.captureBackground?.create(store);
   const OPTIONS_URL = root.browser.runtime.getURL('options.html');
   const isOptions = (sender) => sender.url === OPTIONS_URL && !sender.tab?.incognito;
   const isAmz = (sender) => Boolean(sender.tab && !sender.tab.incognito && sender.frameId === 0
@@ -20,6 +21,12 @@
     .catch((error) => ({ ok: false, error: error.message || 'Import failed.' }));
   let syncTimer = null;
   async function flushAndSchedule() {
+    await store.cleanup?.();
+    if (!await root.browser.permissions.contains({ origins: [`${FSD.importClient.ORIGIN}/*`] })) {
+      const { settings } = await store.snapshot();
+      if (settings.userId) await store.stop('access_revoked');
+      return { sent: 0 };
+    }
     const result = await store.flush();
     if (syncTimer !== null) root.clearTimeout(syncTimer);
     syncTimer = null;
@@ -40,7 +47,14 @@
         const source = new URL(sender.url);
         if (FSD.providers.amz.helpers.pageKind(sender.url) !== 'detail'
           || source.searchParams.get('orderID') !== message.receipt?.order_id) throw new Error('Receipt does not match the open order.');
-        const result = await store.capture(message.receipt);
+        let result;
+        try {
+          result = await store.capture(message.receipt);
+        } catch (error) {
+          await surface?.failed(sender, message.receipt.order_id, error).catch(() => {});
+          throw error;
+        }
+        await surface?.saved(sender, result, message.receipt, 'receipt').catch(() => {});
         // Independent of the content script lifetime, so leaving the page does
         // not cancel a saved receipt or leave an in-progress marker behind.
         void sync();
@@ -48,17 +62,25 @@
       });
     }
     if (message.action === 'listAmzReceipts' && isAmz(sender)) {
-      return safely(async () => ({ receipts: (await store.snapshot()).records.filter((record) => record.kind === 'receipt').map(({ id, data }) => ({ id, data })) }));
+      return safely(async () => ({ receipts: (await store.snapshot()).records.filter((record) => record.kind === 'receipt' && record.data).map(({ id, data }) => ({ id, data })) }));
     }
     if (message.action === 'captureAmzGiftCardSnapshot' && isAmz(sender) && isGiftCardPage(sender.url)) {
       return safely(async () => {
-        const result = await store.captureGiftCardSnapshot(message.snapshot);
+        if (surface && !(await surface.policy(sender)).enabled) throw new Error('Balance-page capture is off. Enable it in settings.');
+        let result;
+        try {
+          result = await store.captureGiftCardSnapshot(message.snapshot);
+        } catch (error) {
+          await surface?.failed(sender, null, error).catch(() => {});
+          throw error;
+        }
+        await surface?.saved(sender, result, message.snapshot, 'gift-card-snapshot').catch(() => {});
         void sync();
         return result;
       });
     }
     if (message.action === 'listAmzGiftCardSnapshots' && isAmz(sender) && isGiftCardPage(sender.url)) {
-      return safely(async () => ({ snapshots: (await store.snapshot()).records.filter((record) => record.kind === 'gift-card-snapshot').map(({ id, data }) => ({ id, data })) }));
+      return safely(async () => ({ snapshots: (await store.snapshot()).records.filter((record) => record.kind === 'gift-card-snapshot' && record.data).map(({ id, data }) => ({ id, data })) }));
     }
     if (message.action === 'openImportOptions' && isAmz(sender)) {
       return safely(async () => { await root.browser.runtime.openOptionsPage(); });
@@ -70,10 +92,16 @@
       if (message.enabled && !await root.browser.permissions.contains({ origins: [`${FSD.importClient.ORIGIN}/*`] })) {
         throw new Error('Grant destination access before connecting.');
       }
-      await store.configure(message.enabled);
-      if (message.enabled) void sync();
+      const result = await store.configure(message.enabled, { useNewAccount: message.useNewAccount === true });
+      if (message.enabled && !result?.requiresAccountChoice) void sync();
+      return result;
     });
     if (message.action === 'syncImports') return safely(flushAndSchedule);
+    if (message.action === 'configureRetention') return safely(async () => {
+      if (typeof message.keepCopy !== 'boolean') throw new Error('Invalid copy preference.');
+      return store.setRetention({ keepCopy: message.keepCopy });
+    });
+    if (message.action === 'forgetSentImports') return safely(() => store.forgetSentHistory());
     if (message.action === 'clearImports') return safely(() => store.clear());
     if (message.action === 'uploadImportFile') return safely(async () => {
       const { settings } = await store.snapshot();
@@ -105,5 +133,12 @@
 
   root.browser.alarms.create('fsd-imports', { periodInMinutes: 1 });
   root.browser.alarms.onAlarm.addListener((alarm) => { if (alarm.name === 'fsd-imports') void sync(); });
+  root.browser.permissions.onRemoved?.addListener((removed) => {
+    if (removed.origins?.includes(`${FSD.importClient.ORIGIN}/*`)) {
+      if (syncTimer !== null) root.clearTimeout(syncTimer);
+      syncTimer = null;
+      void store.stop('access_revoked');
+    }
+  });
   void sync();
 })(globalThis);

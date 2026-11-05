@@ -21,6 +21,7 @@
     "background.js",
     "content.js",
     "options.js",
+    "popup.js",
     "core/**/*.js",
     "providers/**/*.js",
     "types/**/*.d.ts"

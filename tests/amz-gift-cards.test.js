@@ -110,16 +110,20 @@ test('passive capture saves the final text after an overlapping storage acknowle
   const captured = [];
   let release;
   const held = new Promise((resolve) => { release = resolve; });
+  let entered;
+  const started = new Promise((resolve) => { entered = resolve; });
   global.document = doc(page());
   global.location = { href: URL };
   global.browser = { runtime: { async sendMessage(message) {
+    if (message.action === 'amzCapturePolicy') return { ok: true, enabled: true, generation: 0 };
     assert.equal(message.action, 'captureAmzGiftCardSnapshot');
     captured.push(message.snapshot);
-    if (captured.length === 1) await held;
+    if (captured.length === 1) { entered(); await held; }
     return { ok: true };
   } } };
   try {
     const first = provider.observePage();
+    await started;
     global.document.querySelector('#gc-ui-balance-gc-balance-value').textContent = '$30.00';
     await provider.observePage();
     release(); await first;
@@ -136,6 +140,7 @@ test('a failed save is retried when observation runs again and discover lists on
   let captures = 0;
   global.document = doc(page()); global.location = { href: URL };
   global.browser = { runtime: { async sendMessage(message) {
+    if (message.action === 'amzCapturePolicy') return { ok: true, enabled: true, generation: 0 };
     if (message.action === 'captureAmzGiftCardSnapshot') {
       captures += 1;
       if (fail) { fail = false; return { ok: false, error: 'Storage unavailable' }; }
@@ -158,6 +163,7 @@ test('the shared batch runner downloads snapshot bytes once and marks the source
   let downloads = 0;
   const completed = new Set();
   global.browser = { runtime: { async sendMessage(message) {
+    if (message.action === 'amzCapturePolicy') return { ok: true, enabled: true, generation: 0 };
     assert.equal(message.action, 'downloadData'); downloads += 1;
     assert.equal(JSON.parse(new TextDecoder().decode(new Uint8Array(message.data))).schema, snapshot.schema);
     return { ok: true, downloadId: downloads };
@@ -181,4 +187,17 @@ test('manifest loads the provider in content and background contexts and matches
   assert.ok(manifest.background.scripts.includes('providers/amz-gift-cards.js'));
   assert.ok(manifest.content_scripts[0].js.includes('providers/amz-gift-cards.js'));
   for (const match of [`${amz.origin}/gc/balance*`, `${amz.origin}/gp/css/gc/balance*`]) assert.ok(manifest.content_scripts[0].matches.includes(match));
+});
+
+test('disabled balance capture and private windows read no source cells and save nothing', async () => {
+  for (const privateWindow of [false, true]) {
+    const provider = loadProvider(); let messages = 0;
+    global.document = { querySelector() { throw new Error('Source cells must not be read'); } };
+    global.location = { href: URL };
+    global.browser = { extension: { inIncognitoContext: privateWindow }, runtime: { async sendMessage(message) {
+      messages += 1; assert.equal(message.action, 'amzCapturePolicy'); return { ok: true, enabled: false, generation: 0 };
+    } } };
+    try { await provider.observePage(); assert.equal(messages, privateWindow ? 0 : 1); }
+    finally { delete global.document; delete global.location; delete global.browser; }
+  }
 });

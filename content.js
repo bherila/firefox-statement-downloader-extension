@@ -46,9 +46,15 @@
 
     if (provider.observePage) {
       provider.observePage().catch(() => {
-        // Keep browsing usable; opening the provider drawer retries capture and
-        // displays the storage error through the normal discovery error status.
+        // Storage failures are reported by the background toolbar surface.
       });
+    }
+
+    if (provider.passive) {
+      if (activeApp) activeApp.destroy();
+      activeProvider = provider;
+      activeApp = null;
+      return;
     }
 
     if (provider !== activeProvider) {
@@ -78,4 +84,7 @@
   observer.observe(document.documentElement, { childList: true, characterData: true, subtree: true });
   root.addEventListener('popstate', () => scheduleReconcile());
   root.addEventListener('hashchange', () => scheduleReconcile());
+  root.browser?.runtime?.onMessage?.addListener((message) => {
+    if (message.event === 'capturePreferencesChanged') scheduleReconcile();
+  });
 })(globalThis);

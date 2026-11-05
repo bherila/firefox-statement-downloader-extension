@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Receipts</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1 id="title">Receipts</h1>
+  <p id="current" role="status" aria-live="polite">Checking this tab…</p>
+  <p id="detail"></p>
+  <section id="history" hidden><p id="history-count"></p><ul id="unsaved"></ul></section>
+  <section id="queue-section"><h2>Sending to pfifi.com</h2><p id="queue"></p></section>
+  <section id="recent-section"><h2>Recent</h2><p>The last 20 saves across your tabs.</p><ol id="recent"></ol></section>
+  <button id="settings" type="button">Settings and collected receipts</button>
+  <script src="core/runtime.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

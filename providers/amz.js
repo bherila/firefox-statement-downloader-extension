@@ -139,52 +139,74 @@
     return result;
   }
 
+  function historyOrderIds(doc) {
+    const cards = [...doc.querySelectorAll('.order-card')];
+    if (!cards.length) return null;
+    const ids = [];
+    for (const card of cards) {
+      const found = new Set();
+      for (const link of card.querySelectorAll('a[href]')) {
+        try {
+          const url = new URL(link.getAttribute('href'), FSD.amz.origin);
+          const id = url.searchParams.get('orderID');
+          if (pageKind(url.href) === 'detail' && /^\d{3}-\d{7}-\d{7}$/.test(id || '')) found.add(id);
+        } catch (error) { /* Ignore unrelated links. */ }
+      }
+      if (found.size !== 1) return null;
+      ids.push([...found][0]);
+    }
+    return new Set(ids).size === cards.length ? ids : null;
+  }
+
   let capturing = false;
   let observationPending = false;
   let lastReceipt = '';
+  let generation = null;
   async function captureCurrentPage() {
-    if (capturing) {
-      observationPending = true;
-      return;
-    }
-    const receipt = parseReceipt(root.document, root.location.href);
-    if (!receipt) return;
-    const serialized = JSON.stringify(receipt);
-    if (serialized === lastReceipt) return;
+    if (root.browser.extension?.inIncognitoContext) return;
+    if (capturing) { observationPending = true; return; }
     capturing = true;
     try {
+      const policy = await message('amzCapturePolicy');
+      if (!policy.enabled) { lastReceipt = ''; return; }
+      if (generation !== policy.generation) { generation = policy.generation; lastReceipt = ''; }
+      if (pageKind(root.location.href) === 'history') {
+        lastReceipt = '';
+        await message('amzPageStatus', { state: 'history', orderIds: historyOrderIds(root.document) || [] });
+        return;
+      }
+      const receipt = parseReceipt(root.document, root.location.href);
+      if (!receipt) {
+        lastReceipt = '';
+        await message('amzPageStatus', { state: 'unreadable' });
+        return;
+      }
+      const serialized = JSON.stringify(receipt);
+      if (serialized === lastReceipt) return;
       await message('captureAmzReceipt', { receipt });
       lastReceipt = serialized;
     } finally {
       capturing = false;
-    }
-    if (observationPending) {
-      observationPending = false;
-      await captureCurrentPage();
+      if (observationPending) {
+        observationPending = false;
+        await captureCurrentPage();
+      }
     }
   }
 
   /** @type {FsdProvider} */
   const provider = {
-    id: 'amz', label: 'AMZ receipts', requiresDateRange: false,
+    id: 'amz', label: `${FSD.amz.displayName} receipts`, requiresDateRange: false, passive: true,
     observePage: captureCurrentPage,
     isSupportedPage: () => Boolean(pageKind(root.location.href)),
     findMountPoint: () => root.document.querySelector(`${component('orderDetailsTitle')}, h1`),
-    renderControls(container) {
-      const description = root.document.createElement('p');
-      description.textContent = 'Receipts are saved automatically when you open an order’s details. Browse normally; no orders or receipt pages are opened for you. Find documents lists your locally collected receipts.';
-      const button = root.document.createElement('button');
-      button.type = 'button';
-      button.textContent = 'Import settings and collected receipts';
-      button.addEventListener('click', () => message('openImportOptions').catch(() => {}));
-      container.append(description, button);
-    },
+    renderControls() {},
     async readOptions() { return {}; },
     async discoverDocuments() {
       await captureCurrentPage();
       const result = await message('listAmzReceipts');
       return result.receipts.map((receipt) => FSD.normalizeDocument('amz', {
-        id: receipt.id, title: `AMZ order ${receipt.data.order_id}`, category: 'receipt',
+        id: receipt.id, title: `${FSD.amz.displayName} order ${receipt.data.order_id}`, category: 'receipt',
         filename: `Receipts/AMZ/${receipt.data.order_id}-${receipt.id.slice(0, 12)}.json`,
         metadata: { receipt: receipt.data },
       }));
@@ -193,7 +215,7 @@
       const data = new TextEncoder().encode(JSON.stringify(document.metadata.receipt, null, 2));
       return { data: Array.from(data), filename: document.filename, contentType: 'application/json' };
     },
-    helpers: { pageKind, money, parseReceipt, captureCurrentPage },
+    helpers: { pageKind, money, parseReceipt, historyOrderIds, captureCurrentPage },
   };
 
   FSD.providers = Object.assign(FSD.providers || {}, { amz: provider });

@@ -150,6 +150,7 @@ test('passive observation saves each stable page once, including after a failed 
   global.document = doc(standard());
   global.location = { href: url() };
   global.browser = { runtime: { async sendMessage(message) {
+    if (message.action === 'amzCapturePolicy') return { ok: true, enabled: true, generation: 0 };
     if (fail) { fail = false; return { ok: false, error: 'Storage full' }; }
     saved.push(message); return { ok: true };
   } } };
@@ -168,15 +169,19 @@ test('an observation during storage is captured after acknowledgement even when 
   const saved = [];
   let release;
   const held = new Promise((resolve) => { release = resolve; });
+  let entered;
+  const started = new Promise((resolve) => { entered = resolve; });
   global.document = doc(standard().replace('EXAMPLE PRODUCT 0', 'EXAMPLE INITIAL PRODUCT'));
   global.location = { href: url() };
   global.browser = { runtime: { async sendMessage(message) {
+    if (message.action === 'amzCapturePolicy') return { ok: true, enabled: true, generation: 0 };
     saved.push(message.receipt);
-    if (saved.length === 1) await held;
+    if (saved.length === 1) { entered(); await held; }
     return { ok: true };
   } } };
   try {
     const first = provider.observePage();
+    await started;
     global.document.querySelector('[data-component="itemTitle"] a').textContent = 'EXAMPLE FINAL PRODUCT';
     const overlapping = provider.observePage();
     release();
@@ -194,6 +199,7 @@ test('the real provider and batch runner download a receipt once and record comp
   let downloads = 0;
   const completed = new Set();
   global.browser = { runtime: { async sendMessage(message) {
+    if (message.action === 'amzCapturePolicy') return { ok: true, enabled: true, generation: 0 };
     assert.equal(message.action, 'downloadData');
     downloads += 1;
     assert.equal(JSON.parse(new TextDecoder().decode(new Uint8Array(message.data))).schema, amz.receiptSchema);
@@ -212,4 +218,13 @@ test('the real provider and batch runner download a receipt once and record comp
   } finally {
     delete global.browser;
   }
+});
+
+test('history counts require exactly one supported order identity in every visible order card', () => {
+  const link = (id) => `<a href="/your-orders/order-details?orderID=${id}">View details</a>`;
+  const first = '100-1000000-1000000'; const second = '200-2000000-2000000';
+  const { historyOrderIds } = provider.helpers;
+  assert.deepEqual(historyOrderIds(doc(`<div class="order-card">${link(first)}</div><div class="order-card">${link(second)}</div>${link('300-3000000-3000000')}`)), [first, second]);
+  for (const html of ['<p>Loading</p>', `<div class="order-card">${link(first)}${link(second)}</div>`,
+    `<div class="order-card">${link(first)}</div><div class="order-card">Loading</div>`]) assert.equal(historyOrderIds(doc(html)), null);
 });

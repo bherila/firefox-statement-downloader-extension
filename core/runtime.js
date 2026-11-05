@@ -10,6 +10,7 @@
   const reportsStorageHost = `gdax-reports.s3.${brand}aws.com`;
   const amz = Object.freeze({
     host, marketplace, origin: `https://${host}`,
+    displayName: brand[0].toUpperCase() + brand.slice(1),
     receiptSchema: `${brand}.receipt.v1`,
     giftCardSchema: `${brand}.gift-card-balance.v1`,
     reportsStorageHost, reportsOrigin: `https://${reportsStorageHost}`,

@@ -28,13 +28,12 @@ labeled charges, totals, and printed dates/status. It makes **no AMZ requests**,
 no links, and does not open orders or invoices. Order-history summaries alone do not contain
 the full receipt and are not saved as detailed receipts. Only US English layouts are supported.
 
-Use **Bulk download → Find documents → Download** to export collected receipts as JSON,
-or open the extension's settings for an archive export and upload status. Exact repeats
+Nothing is added to AMZ pages. Use the toolbar button for this tab’s confirmed save state, missing fields, and the last 20 saves across tabs. History counts are read-only and omitted if order cards cannot be read reliably. Export collected sources and review upload status in extension settings. Exact repeats
 are skipped; changed orders become separate revisions. Missing or unparseable item data
-keeps a receipt local for review. Capture includes preloaded item tables, so Fresh's collapsed
+marks a receipt as partial. A partial waits one minute before sending, giving the page time to finish loading. If a complete read arrives during that wait, the older partial is kept locally without being sent. Capture includes preloaded item tables, so Fresh's collapsed
 carousel does not restrict it to the initially visible products.
 
-In extension settings, **Connect and enable automatic receipt imports** requests optional
+In extension settings, **Connect to pfifi.com** requests optional
 access to `pfifi.com` and pins the currently signed-in account. The public browser-import
 API stores immutable receipt sources with their itemized data; receipt capture does not
 post ledger transactions or run AI. You can also select statement, payslip, utility-bill,
@@ -49,17 +48,18 @@ receiver and session-bootstrap endpoints must be available before connecting can
 
 Imports send up to twenty receipts per request, with at least five seconds between batches.
 HTTP 429 responses honor `Retry-After` and retry automatically with increasing, randomized
-backoff; the pending receipt batch and retry deadline survive a browser restart. Other failures
-and account changes pause imports until you reconnect. Pause prevents starting another batch;
-an upload already in flight can finish. Previously pinned records never move to a different account.
-Source documents stay local until imports are enabled. Storage holds up to 2,000 revisions;
-export before clearing it. Clearing also removes local upload history. Raw HTML, images,
+backoff; the pending receipt batch and retry deadline survive a browser restart. Network errors, timeouts and server failures use the same durable retry schedule. Indexed validation refusals set only the affected sources aside with their reason; healthy sources keep sending. Authentication, permission, account changes and revoked destination access stop imports with an action to resolve the problem. Pause prevents starting another batch;
+an upload already in flight can finish. Previously pinned records never move to a different account. Resume shows both account names when a different account is signed in and requires an explicit choice before sending. Choosing the new account applies only to new or unpinned sources.
+Source documents stay local until imports are enabled. By default, a confirmed hash drops its source contents from this browser and leaves only a small sent record, so an unchanged revisit saves and sends nothing. **Keep a copy here after sending** is off by default; enabling it applies to future held copies and cannot recover discarded data. Sent receipts can be exported from pfifi.com.
+
+Settings group one row per order, 50 per page, with Needs attention, Waiting, Sent, Other account and All tabs plus merchant/order search. **Export what’s held here as JSON** includes only still-held source payloads. **Forget sent history…** removes confirmed history (including any kept copies) so revisits can save again; server hash deduplication still applies. **Clear everything…** removes local contents and history only.
+
+Up to 20 source payloads are held per receipt order and pinned recipient. Replaced payloads expire 7 days after replacement; the newest held and newest complete revision are protected. A partial cannot displace complete evidence. Once connected, unsent payloads are protected from scheduled/cap deletion, including during a long pause; a 21st unsent revision is refused if all 20 are protected. Before the first connection, scheduled deletion and cap eviction apply normally. Thin sent records do not count toward that limit. Gift-card pages have no order identity: confirmed contents follow the same copy preference, without inferring that one activity page replaces another. Raw HTML, images,
 shipping addresses, payment credentials, and the HAR used for calibration are not stored.
 
 The API contract, design, and remaining scope are in [docs/passive-receipts.md](docs/passive-receipts.md).
 
-Gift-card balance pages at `/gc/balance` and `/gp/css/gc/balance` are captured the same
-way. Browse their Previous/Next links yourself; each visited page saves its reported
+Gift-card balance capture is **off by default**. Enable it in settings before balance or activity cells are read. At `/gc/balance` and `/gp/css/gc/balance`, browse Previous/Next links yourself; each visited page then saves its reported
 balance, activity dates/types, signed amounts, per-row closing balances, linked order IDs,
 and pagination indicators. Raw descriptions are excluded because they can contain
 redeemable claim codes. Each snapshot explicitly covers only the page you viewed.

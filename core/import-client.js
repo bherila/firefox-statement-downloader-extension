@@ -39,6 +39,25 @@
     throw new Error('Imports paused or the destination account changed.');
   }
 
+  function accountMismatch(active) {
+    return Object.assign(new Error('The signed-in account changed. Review accounts in settings.'), {
+      status: 409,
+      activeIdentity: { userId: active.userId, userName: active.userName || String(active.userId) },
+    });
+  }
+
+  function validationDetails(body) {
+    const sourceErrors = {};
+    const requestErrors = {};
+    for (const [field, value] of Object.entries(body?.errors || {})) {
+      const messages = (Array.isArray(value) ? value : [value]).filter((item) => typeof item === 'string');
+      const match = field.match(/^sources\.(0|[1-9]\d*)(?:\.|$)/);
+      if (match) sourceErrors[Number(match[1])] = [...(sourceErrors[Number(match[1])] || []), ...messages];
+      else requestErrors[field] = messages;
+    }
+    return { sourceErrors, requestErrors };
+  }
+
   function createImportClient(fetcher = root.fetch.bind(root)) {
     async function request(path, options = {}) {
       const controller = new AbortController();
@@ -55,6 +74,13 @@
             : response.status === 409 ? 'The signed-in account changed. Reconnect in settings.'
               : `Import destination returned HTTP ${response.status}.`);
           error.status = response.status;
+          // Keep structured validation evidence: only indexed source errors
+          // identify a refused source; request-level errors do not.
+          let body = null;
+          try { body = await response.json(); } catch (parseError) { /* Non-JSON failures still retain their HTTP status. */ }
+          const details = response.status === 422 ? validationDetails(body) : {};
+          if (response.status === 422 && typeof body?.message === 'string') error.message = body.message.slice(0, 2000);
+          Object.assign(error, { body, ...details });
           if (response.status === 429) {
             const header = response.headers?.get('Retry-After')?.trim() || '';
             const wait = /^\d+(?:\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now();
@@ -74,12 +100,28 @@
         || typeof result.csrf_token !== 'string' || !result.csrf_token) {
         throw new Error('The destination does not support browser imports yet.');
       }
-      return { userId: result.user_id, csrfToken: result.csrf_token };
+      return { userId: result.user_id, userName: typeof result.user_name === 'string' && result.user_name.trim() ? result.user_name.trim() : String(result.user_id), csrfToken: result.csrf_token };
+    }
+
+    async function uploadRequest(path, options) {
+      try {
+        return await request(path, options);
+      } catch (error) {
+        // The browser session can change between the preflight and POST. Fetch
+        // only identity metadata so the account-choice UI can name both owners.
+        if (error.status === 409) {
+          try {
+            const active = await session();
+            error.activeIdentity = { userId: active.userId, userName: active.userName };
+          } catch (identityError) { /* Preserve the original stop if sign-in also expired. */ }
+        }
+        throw error;
+      }
     }
 
     async function upload(record, expectedUserId) {
       const active = await session();
-      if (active.userId !== expectedUserId) throw new Error('The signed-in account changed. Reconnect in settings.');
+      if (active.userId !== expectedUserId) throw accountMismatch(active);
       const form = new FormData();
       form.append('file', new Blob([record.bytes], { type: record.contentType }), record.filename);
       form.append('sha256', record.id);
@@ -93,7 +135,7 @@
       // request's authenticated user before storing any source bytes.
       const path = record.kind === 'gift-card-snapshot' ? '/api/finance/browser-import/gift-card-snapshots'
         : source ? '/api/finance/browser-import/receipts' : '/api/genai/import/jobs';
-      const result = await request(path, {
+      const result = await uploadRequest(path, {
         method: 'POST', headers: { 'X-CSRF-TOKEN': active.csrfToken }, body: form,
       });
       const remoteId = source ? result.document_id : result.job_id;
@@ -108,7 +150,7 @@
         throw new Error('A batch must contain one supported source kind.');
       }
       const active = await session();
-      if (active.userId !== expectedUserId) throw new Error('The signed-in account changed. Reconnect in settings.');
+      if (active.userId !== expectedUserId) throw accountMismatch(active);
       const form = new FormData();
       form.append('expected_user_id', String(expectedUserId));
       for (const record of records) {
@@ -117,7 +159,7 @@
       }
       const path = kind === 'gift-card-snapshot' ? '/api/finance/browser-import/gift-card-snapshots/batch'
         : '/api/finance/browser-import/receipts/batch';
-      const result = await request(path, {
+      const result = await uploadRequest(path, {
         method: 'POST', headers: { 'X-CSRF-TOKEN': active.csrfToken }, body: form,
       });
       const expected = new Set(records.map((record) => record.id));
@@ -136,6 +178,6 @@
     return { session, upload, uploadBatch };
   }
 
-  FSD.importClient = { ORIGIN, JOB_TYPES, createImportClient, retryDelay, withRateLimitRetry };
+  FSD.importClient = { ORIGIN, JOB_TYPES, createImportClient, retryDelay, withRateLimitRetry, accountMismatch };
   root.FinancialStatementDownloader = FSD;
 })(globalThis);

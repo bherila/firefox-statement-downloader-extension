@@ -44,7 +44,7 @@ test('package emits a loadable manifest and includes every unchanged runtime dep
     execFileSync('unzip', ['-t', archive]);
     const names = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' }).trim().split('\n');
     const scripts = [...new Set([...manifest.background.scripts, ...manifest.content_scripts.flatMap((entry) => entry.js)])];
-    for (const file of [...scripts, manifest.options_ui.page, 'options.js', 'options.css']) {
+    for (const file of [...scripts, manifest.options_ui.page, 'options.js', 'options.css', manifest.browser_action.default_popup, 'popup.js', 'popup.css']) {
       assert.ok(names.includes(file), `Missing packaged asset: ${file}`);
       assert.deepEqual(fs.readFileSync(path.join(staging, file)), fs.readFileSync(path.join(root, file)));
       if (file.endsWith('.js')) new vm.Script(fs.readFileSync(path.join(staging, file), 'utf8'), { filename: file });
