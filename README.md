@@ -1,7 +1,7 @@
 # Financial Statement Downloader for Firefox
 
 A Firefox extension for bulk-downloading financial documents and passively collecting
-AMZ receipts and gift-card balance/activity pages. It runs inside your browser, with optional uploads to Planfina using
+AMZ receipts and gift-card balance/activity pages. It runs inside your browser, with optional uploads to pfifi.com using
 your existing signed-in session.
 
 ## Provider status
