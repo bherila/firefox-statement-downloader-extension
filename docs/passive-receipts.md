@@ -13,7 +13,8 @@
    observation time and upload status stay outside the hash. Exact repeats are no-ops.
 4. Make uploads opt-in in the extension's own settings, with optional destination permission.
    Pin the recipient when connecting, keep source receipts during outages, serialize sync,
-   and pause on refusal. A lost receipt acknowledgement is safe to retry because intake
+   and pause on authentication failure or account change. Rate limiting uses automatic
+   backoff. A lost receipt acknowledgement is safe to retry because intake
    deduplicates by recipient and SHA-256. Previously pinned sources remain with that recipient.
 5. Reuse the public multipart job API for explicitly selected statements and other supported
    documents. Upload is source intake; parsing and review belong to the destination.
@@ -34,6 +35,21 @@ token as `X-CSRF-TOKEN`. Responses contain `{document_id, duplicate, status:"rec
 Repeated identical bytes return the original document id; changed bytes create a new source.
 The server checks the expected user against the authenticated request before writing.
 
+The extension drains its receipt queue with `POST /api/finance/browser-import/receipts/batch`:
+multipart `files[]`, matching `sha256[]`, and `expected_user_id`. A batch holds 1–20 sources,
+each at most 512 KiB. The response's `results` contain each source's `sha256`, `document_id`,
+`duplicate`, and `status`. Acknowledgements are checked against every expected hash before
+local completion is recorded. Every source validates before the first write. Storage failure
+may retain earlier source documents; a whole-batch retry safely deduplicates those bytes.
+
+Batches are spaced by at least five seconds. HTTP 429 keeps the batch queued and imports
+enabled. Both delta-seconds and HTTP-date `Retry-After` values are honored; the delay is at
+least the larger of that value and exponentially increasing backoff (30 seconds initially,
+up to one hour), plus upward jitter. Receipt retry deadlines persist across restart and
+cannot be bypassed by pausing/reconnecting. Alarms and timers recheck the deadline before
+requesting a session or sending bytes. Pause immediately prevents starting another batch,
+including after a restart; the batch already in flight may complete.
+
 Receipt schema `amazon.receipt.v1`:
 
 - `marketplace`, `currency`, `order_id`, `layout`, canonical `source_url`;
@@ -52,8 +68,10 @@ For explicit file uploads, `POST /api/genai/import/jobs` takes multipart `file`,
 and `expected_user_id`, with the same session/CSRF protection. Supported client job types:
 `finance_transactions`, `finance_payslip`, `utility_bill`, `equity_award`. The server validates
 the expected user and returns `{job_id,status}`. The extension never applies job results.
-This endpoint does not deduplicate pending jobs, so files are sent once with no automatic retry.
-If acknowledgement is lost, check Import Center before uploading again.
+This endpoint does not deduplicate pending jobs. Only HTTP 429 automatically retries, after
+`Retry-After` and increasing backoff, while imports remain enabled for the pinned account.
+An uncertain network acknowledgement is not automatically retried: check Import Center
+before uploading again.
 
 ## Verification and limits
 
@@ -61,7 +79,9 @@ Synthetic DOM fixtures cover standard, Whole Foods, and Fresh layouts; products 
 links; weighted grocery quantities; hidden preloaded tables; duplicate accessibility price
 text; partial pages; and order-identity transitions. Storage/client/message tests cover
 concurrent captures, deduplication, revisions, recipient pinning, refusal, restart, CSRF,
-multipart uploads, sender boundaries, and optional permissions. Private browsing is excluded.
+multipart uploads, sender boundaries, optional permissions, batch hash association, persisted
+429 deadlines, automatic backoff, immediate pause, and actual provider/batch download completion.
+Private browsing is excluded.
 
 Saved-page validation checks item counts against each layout's source item containers. It
 does not prove future Amazon layouts will remain stable or that all historical orders have

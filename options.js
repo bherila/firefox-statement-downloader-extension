@@ -9,7 +9,7 @@
   }
   async function refresh() {
     const { settings, records } = await message('importSnapshot');
-    query('#connection').textContent = settings.enabled ? `Connected to account ${settings.userId}. Automatic receipt imports enabled.`
+    query('#connection').textContent = settings.enabled ? `Connected to account ${settings.userId}. Automatic receipt imports enabled.${settings.retryAt > Date.now() ? ` Rate limited; retrying after ${new Date(settings.retryAt).toLocaleTimeString()}.` : ''}`
       : settings.lastError ? `Imports paused: ${settings.lastError}` : 'Imports paused. Receipts stay in this browser.';
     query('#counts').textContent = `${records.length} saved revisions · ${records.filter((record) => record.status === 'received').length} received by destination · ${records.filter((record) => record.data.warnings.length).length} need review locally`;
     query('#sync').disabled = !settings.enabled;
@@ -64,4 +64,12 @@
     return `Upload received as job ${result.remoteId}. Review it in Import Center.`;
   }));
   void refresh().catch((error) => { query('#status').textContent = error.message; });
+  root.browser.runtime.onMessage?.addListener((event) => {
+    if (event.event === 'importRateLimited') query('#status').textContent = `Rate limited; retrying automatically after ${new Date(event.retryAt).toLocaleTimeString()}. Pause imports to stop retrying.`;
+  });
+  root.browser.storage?.onChanged?.addListener((changes, area) => {
+    if (area === 'local' && Object.keys(changes).some((key) => key.startsWith('fsd:imports:'))) {
+      void refresh().catch((error) => { query('#status').textContent = error.message; });
+    }
+  });
 })(globalThis);

@@ -25,10 +25,16 @@ function harness() {
     async set(values) { Object.assign(saved, structuredClone(values)); },
   };
   const uploads = [];
+  const batches = [];
+  const clock = { value: Date.now() };
   const client = { async session() { return { userId: 1 }; }, async upload(record, owner) {
     uploads.push({ record, owner }); return { remoteId: uploads.length, status: 'received' };
+  }, async uploadBatch(records, owner) {
+    batches.push(records);
+    return Promise.all(records.map(async (record) => ({ id: record.id, ...await this.upload(record, owner) })));
   } };
-  return { saved, storage, uploads, client, store: importStore.createImportStore(storage, client) };
+  return { saved, storage, uploads, batches, clock, client,
+    store: importStore.createImportStore(storage, client, { now: () => clock.value, random: () => 0 }) };
 }
 
 test('concurrent tabs deduplicate stable receipt bytes and preserve changed revisions', async () => {
@@ -84,9 +90,9 @@ test('review warnings keep a receipt local while complete receipts can sync', as
   assert.equal(uploads.length, 0);
 });
 
-test('pause stops after the in-flight receipt and persists while that upload is still pending', async () => {
+test('pause stops after the in-flight batch and persists while that upload is still pending', async () => {
   const { store, client, uploads, storage } = harness();
-  for (let i = 0; i < 3; i += 1) {
+  for (let i = 0; i < 21; i += 1) {
     const data = receipt(); data.order_id = `100-1000000-${1000000 + i}`;
     data.source_url = `https://www.amazon.com/your-orders/order-details?orderID=${data.order_id}`;
     await store.capture(data);
@@ -96,8 +102,8 @@ test('pause stops after the in-flight receipt and persists while that upload is 
   let started;
   const held = new Promise((resolve) => { release = resolve; });
   const entered = new Promise((resolve) => { started = resolve; });
-  const upload = client.upload;
-  client.upload = async (...args) => { const result = await upload(...args); started(); await held; return result; };
+  const upload = client.uploadBatch.bind(client);
+  client.uploadBatch = async (...args) => { const result = await upload(...args); started(); await held; return result; };
   const syncing = store.flush();
   await entered;
   const pausing = store.configure(false);
@@ -108,8 +114,8 @@ test('pause stops after the in-flight receipt and persists while that upload is 
   await syncing;
   await pausing;
   assert.equal(persisted.settings.enabled, false);
-  assert.equal(uploads.length, 1);
-  assert.equal((await store.snapshot()).records.filter((record) => record.status === 'local').length, 2);
+  assert.equal(uploads.length, 20);
+  assert.equal((await store.snapshot()).records.filter((record) => record.status === 'local').length, 1);
 });
 
 test('a pause supersedes a connection whose session check has not completed', async () => {
@@ -124,15 +130,15 @@ test('a pause supersedes a connection whose session check has not completed', as
   assert.equal((await store.snapshot()).settings.enabled, false);
 });
 
-test('archive draining shares a ten-per-minute budget across capture and alarm events', async () => {
+test('archive draining shares bounded batches and spacing across capture and alarm events', async () => {
   const { store, uploads } = harness();
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 22; i += 1) {
     const data = receipt(); data.order_id = `100-1000000-${1000000 + i}`;
     data.source_url = `https://www.amazon.com/your-orders/order-details?orderID=${data.order_id}`;
     await store.capture(data);
   }
   await store.configure(true); await store.flush(); await store.flush();
-  assert.equal(uploads.length, 10);
+  assert.equal(uploads.length, 20);
   assert.equal((await store.snapshot()).records.filter((record) => record.status === 'local').length, 2);
 });
 
@@ -151,8 +157,8 @@ test('a refusal preserves records, pauses automatic retries, and permits explici
   const { store, client, uploads } = harness();
   await store.capture(receipt()); await store.configure(true);
   const normal = client.upload;
-  client.upload = async () => { const error = new Error('HTTP 429'); error.status = 429; throw error; };
-  await assert.rejects(store.flush(), /429/);
+  client.upload = async () => { const error = new Error('HTTP 403'); error.status = 403; throw error; };
+  await assert.rejects(store.flush(), /403/);
   await store.flush();
   const state = await store.snapshot();
   assert.equal(state.records[0].status, 'local');
@@ -217,4 +223,102 @@ test('API client rejects login failures and malformed acknowledgements', async (
   await assert.rejects(unauthorized.session(), /Sign in/);
   const malformed = importClient.createImportClient(async () => ({ ok: true, async json() { return {}; } }));
   await assert.rejects(malformed.session(), /does not support/);
+});
+
+test('429 Retry-After supports delta seconds and HTTP dates without ignoring the server wait', async () => {
+  for (const [header, minimum] of [['120', 120000], [new Date(Date.now() + 120000).toUTCString(), 119000], ['invalid', 0]]) {
+    const client = importClient.createImportClient(async () => ({ ok: false, status: 429, headers: new Headers({ 'Retry-After': header }) }));
+    await assert.rejects(client.session(), (error) => error.status === 429 && error.retryAfterMs >= minimum);
+  }
+});
+
+test('receipt 429 backoff survives restart and retries the identical batch only after its deadline', async () => {
+  const { store, client, storage, clock, uploads } = harness();
+  const attempts = [];
+  const uploadBatch = client.uploadBatch.bind(client);
+  client.uploadBatch = async (records, owner) => {
+    attempts.push(records.map((record) => ({ id: record.id, bytes: Array.from(record.bytes) })));
+    if (attempts.length === 1) { const error = new Error('HTTP 429'); error.status = 429; error.retryAfterMs = 120000; throw error; }
+    return uploadBatch(records, owner);
+  };
+  await store.capture(receipt()); await store.configure(true);
+  const start = clock.value;
+  assert.equal((await store.flush()).nextSyncAt, start + 120000);
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.settings.enabled, true);
+  assert.equal(snapshot.records[0].status, 'local');
+  const resumed = importStore.createImportStore(storage, client, { now: () => clock.value, random: () => 0 });
+  clock.value = start + 119999;
+  await resumed.flush();
+  assert.equal(attempts.length, 1);
+  clock.value = start + 120000;
+  await resumed.flush();
+  assert.equal(uploads.length, 1);
+  assert.deepEqual(attempts[0], attempts[1]);
+  assert.equal((await resumed.snapshot()).settings.retryAttempt, 0);
+});
+
+test('repeated 429s increase the delay and pausing/reconnecting cannot bypass Retry-After', async () => {
+  const { store, client, clock } = harness();
+  let attempts = 0;
+  client.uploadBatch = async () => { attempts += 1; const error = new Error('HTTP 429'); error.status = 429; throw error; };
+  await store.capture(receipt()); await store.configure(true);
+  const start = clock.value;
+  assert.equal((await store.flush()).nextSyncAt, start + 30000);
+  await store.configure(false); await store.configure(true);
+  await store.flush();
+  assert.equal(attempts, 1);
+  clock.value += 30000;
+  assert.equal((await store.flush()).nextSyncAt, start + 90000);
+  await store.configure(false);
+  clock.value += 60000;
+  assert.equal((await store.flush()).nextSyncAt, undefined);
+  assert.equal(attempts, 2);
+});
+
+test('batch client sends bounded multipart sources and matches acknowledgements by hash, not position', async () => {
+  const records = ['a', 'b'].map((letter) => ({ id: letter.repeat(64), filename: `${letter}.json`,
+    bytes: new TextEncoder().encode('{}'), contentType: 'application/json' }));
+  const requests = [];
+  const client = importClient.createImportClient(async (url, options) => {
+    requests.push({ url, options });
+    return { ok: true, async json() { return url.endsWith('/session') ? { user_id: 1, csrf_token: 'synthetic-csrf' }
+      : { results: [{ sha256: records[1].id, document_id: 2, duplicate: false, status: 'received' },
+        { sha256: records[0].id, document_id: 1, duplicate: true, status: 'received' }] }; } };
+  });
+  const result = await client.uploadBatch(records, 1);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, 'https://pfifi.com/api/finance/browser-import/receipts/batch');
+  assert.equal(requests[1].options.body.getAll('files[]').length, 2);
+  assert.deepEqual(requests[1].options.body.getAll('sha256[]'), records.map((record) => record.id));
+  assert.deepEqual(result.map((item) => item.remoteId), [1, 2]);
+  await assert.rejects(client.uploadBatch(Array(21).fill(records[0]), 1), /1–20/);
+});
+
+test('batch client refuses a partial acknowledgement without treating remaining sources as received', async () => {
+  const client = importClient.createImportClient(async (url) => ({ ok: true, async json() {
+    return url.endsWith('/session') ? { user_id: 1, csrf_token: 'synthetic-csrf' } : { results: [] };
+  } }));
+  await assert.rejects(client.uploadBatch([{ id: 'a'.repeat(64), filename: 'example.json', contentType: 'application/json', bytes: new Uint8Array([1]) }], 1), /incomplete/);
+});
+
+test('explicit-file 429 retry honors backoff and stops on pause without retrying uncertain network errors', async () => {
+  let attempts = 0;
+  const waits = [];
+  const result = await importClient.withRateLimitRetry(async () => {
+    attempts += 1;
+    if (attempts < 3) { const error = new Error('HTTP 429'); error.status = 429; error.retryAfterMs = attempts === 1 ? 120000 : 0; throw error; }
+    return 'received';
+  }, { random: () => 0, async wait(ms) { waits.push(ms); } });
+  assert.equal(result, 'received');
+  assert.deepEqual(waits, [120000, 60000]);
+  let enabled = true;
+  let sends = 0;
+  await assert.rejects(importClient.withRateLimitRetry(async () => { sends += 1; const error = new Error('HTTP 429'); error.status = 429; throw error; },
+    { async check() { return enabled; }, async wait() { enabled = false; } }), /paused/);
+  assert.equal(sends, 1);
+  let uncertainSends = 0;
+  await assert.rejects(importClient.withRateLimitRetry(async () => { uncertainSends += 1; throw new Error('Acknowledgement lost'); },
+    { async wait() { assert.fail('Uncertain uploads must not automatically retry'); } }), /lost/);
+  assert.equal(uncertainSends, 1);
 });

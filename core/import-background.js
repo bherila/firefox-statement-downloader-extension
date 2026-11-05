@@ -10,7 +10,20 @@
     && FSD.providers.amazon.helpers.pageKind(sender.url));
   const safely = (fn) => Promise.resolve().then(fn).then((result) => Object.assign({ ok: true }, result))
     .catch((error) => ({ ok: false, error: error.message || 'Import failed.' }));
-  const sync = () => store.flush().catch(() => {});
+  let syncTimer = null;
+  async function flushAndSchedule() {
+    const result = await store.flush();
+    if (syncTimer !== null) root.clearTimeout(syncTimer);
+    syncTimer = null;
+    if (result.nextSyncAt) {
+      // Durable due times survive restart; this timer drains a backlog between
+      // alarm ticks without making any request before Retry-After has elapsed.
+      syncTimer = root.setTimeout(() => { syncTimer = null; void sync(); },
+        Math.min(60000, Math.max(1000, result.nextSyncAt - Date.now())));
+    }
+    return result;
+  }
+  const sync = () => flushAndSchedule().catch(() => {});
 
   root.browser.runtime.onMessage.addListener((message, sender) => {
     if (!message || typeof message.action !== 'string') return undefined;
@@ -42,7 +55,7 @@
       await store.configure(message.enabled);
       if (message.enabled) void sync();
     });
-    if (message.action === 'syncImports') return safely(() => store.flush());
+    if (message.action === 'syncImports') return safely(flushAndSchedule);
     if (message.action === 'clearImports') return safely(() => store.clear());
     if (message.action === 'uploadImportFile') return safely(async () => {
       const { settings } = await store.snapshot();
@@ -56,10 +69,18 @@
       }
       const bytes = new Uint8Array(message.data);
       const id = await FSD.importStore.hash(bytes);
-      // No automatic retry: the job endpoint only deduplicates completed jobs.
-      // On a lost acknowledgement, users check Import Center before re-upload.
-      return client.upload({ kind: 'file', id, bytes, filename: message.filename,
-        contentType: message.contentType, jobType: message.jobType }, settings.userId);
+      // Only 429 retries automatically. An uncertain network acknowledgement
+      // still needs review because the job endpoint can duplicate pending jobs.
+      return FSD.importClient.withRateLimitRetry(() => client.upload({ kind: 'file', id, bytes,
+        filename: message.filename, contentType: message.contentType, jobType: message.jobType }, settings.userId), {
+        async check() {
+          const state = await store.snapshot();
+          return state.settings.enabled && state.settings.userId === settings.userId;
+        },
+        onRetry(milliseconds) {
+          void root.browser.runtime.sendMessage({ event: 'importRateLimited', retryAt: Date.now() + milliseconds }).catch(() => {});
+        },
+      });
     });
     return undefined;
   });

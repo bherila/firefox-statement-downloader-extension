@@ -13,7 +13,7 @@
       .map((value) => value.toString(16).padStart(2, '0')).join('');
   }
 
-  function createImportStore(storage = root.browser.storage.local, client = FSD.importClient.createImportClient()) {
+  function createImportStore(storage = root.browser.storage.local, client = FSD.importClient.createImportClient(), { now = Date.now, random = Math.random } = {}) {
     // All writers, including different tabs and the alarm, share one background
     // queue. Never do content-script storage read/modify/write for the outbox.
     let tail = Promise.resolve();
@@ -111,10 +111,12 @@
       const active = await client.session();
       return serial(async () => {
         if (version !== preferenceVersion) throw new Error('Import preferences changed while connecting.');
-        const { records } = await load();
+        const { settings: previous, records } = await load();
         if (version !== preferenceVersion) throw new Error('Import preferences changed while connecting.');
         for (const record of records) if (record.userId === null) record.userId = active.userId;
-        await storage.set({ [SETTINGS]: { enabled: true, userId: active.userId }, [RECORDS]: records, [PAUSED]: false });
+        const throttle = previous.userId === active.userId
+          ? { nextSyncAt: previous.nextSyncAt, retryAt: previous.retryAt, retryAttempt: previous.retryAttempt } : {};
+        await storage.set({ [SETTINGS]: { enabled: true, userId: active.userId, ...throttle }, [RECORDS]: records, [PAUSED]: false });
         if (version !== preferenceVersion) {
           await storage.set({ [PAUSED]: true });
           throw new Error('Import preferences changed while connecting.');
@@ -130,38 +132,39 @@
         const { settings, records } = await load();
         if (pauseRequested || !settings.enabled) return { sent: 0 };
         const pending = records.filter((record) => record.status === 'local' && record.userId === settings.userId && !record.data.warnings.length);
-        if (!pending.length || (settings.nextSyncAt || 0) > Date.now()) return { sent: 0 };
-        // Ten sources per minute, across capture events, startup, and alarms.
-        // Avoid hitting the receiver's rate limit when an archive is first connected.
-        await storage.set({ [SETTINGS]: { ...settings, nextSyncAt: Date.now() + 60000 } });
-        let active;
+        if (!pending.length) return { sent: 0 };
+        const dueAt = Math.max(settings.nextSyncAt || 0, settings.retryAt || 0);
+        if (dueAt > now()) return { sent: 0, nextSyncAt: dueAt };
+        const batch = pending.slice(0, 20);
         try {
-          active = await client.session();
+          const active = await client.session();
           if (active.userId !== settings.userId) throw new Error('The signed-in account changed. Reconnect in settings.');
-        } catch (error) {
-          await storage.set({ [SETTINGS]: { ...settings, enabled: false, lastError: error.message } });
-          throw error;
-        }
-        let sent = 0;
-        for (const record of pending) {
-          if (pauseRequested || sent >= 10) break;
-          try {
-            const result = await client.upload({ ...record, bytes: new TextEncoder().encode(JSON.stringify(record.data, null, 2)) }, record.userId);
+          if (pauseRequested) return { sent: 0 };
+          const results = await client.uploadBatch(batch.map((record) => ({ ...record,
+            bytes: new TextEncoder().encode(JSON.stringify(record.data, null, 2)) })), settings.userId);
+          for (const record of batch) {
+            const result = results.find((item) => item.id === record.id);
+            if (!result) throw new Error('Batch acknowledgement was incomplete.');
             record.status = 'received';
             record.remoteId = result.remoteId;
             record.error = null;
-            sent += 1;
-          } catch (error) {
-            // Receipt receiver deduplicates by owner+SHA, including when the
-            // previous response was lost. Refusals pause this batch; no retry loop.
-            record.error = error.message;
-            await saveRecords(records);
-            await storage.set({ [SETTINGS]: { ...settings, enabled: false, lastError: error.message } });
-            throw error;
           }
           await saveRecords(records);
+          const nextSyncAt = now() + 5000;
+          await storage.set({ [SETTINGS]: { ...settings, retryAt: null, retryAttempt: 0, lastError: null, nextSyncAt } });
+          return { sent: batch.length, ...(!pauseRequested && pending.length > batch.length ? { nextSyncAt } : {}) };
+        } catch (error) {
+          for (const record of batch) record.error = error.message;
+          await saveRecords(records);
+          if (error.status === 429) {
+            const retryAttempt = settings.retryAttempt || 0;
+            const retryAt = now() + FSD.importClient.retryDelay(error, retryAttempt, random);
+            await storage.set({ [SETTINGS]: { ...settings, retryAt, retryAttempt: retryAttempt + 1, lastError: 'Rate limited; waiting to retry automatically.' } });
+            return { sent: 0, ...(!pauseRequested ? { nextSyncAt: retryAt } : {}) };
+          }
+          await storage.set({ [SETTINGS]: { ...settings, enabled: false, lastError: error.message } });
+          throw error;
         }
-        return { sent };
       }).finally(() => { syncing = null; });
       return syncing;
     }

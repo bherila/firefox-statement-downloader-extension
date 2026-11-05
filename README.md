@@ -46,8 +46,11 @@ once to establish its session. Normal-profile sessions are supported; private-wi
 is disabled, and container-only logins may require signing in in a normal tab. The receipt
 receiver and session-bootstrap endpoints must be available before connecting can succeed.
 
-Imports send at most ten receipts per minute and pause on a failure or account change.
-Reconnect explicitly to resume. Previously pinned records never move to a different account.
+Imports send up to twenty receipts per request, with at least five seconds between batches.
+HTTP 429 responses honor `Retry-After` and retry automatically with increasing, randomized
+backoff; the pending receipt batch and retry deadline survive a browser restart. Other failures
+and account changes pause imports until you reconnect. Pause prevents starting another batch;
+an upload already in flight can finish. Previously pinned records never move to a different account.
 Source documents stay local until imports are enabled. Storage holds up to 2,000 revisions;
 export before clearing it. Clearing also removes local upload history. Raw HTML, images,
 shipping addresses, payment credentials, and the HAR used for calibration are not stored.
