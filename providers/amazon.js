@@ -140,9 +140,13 @@
   }
 
   let capturing = false;
+  let observationPending = false;
   let lastReceipt = '';
   async function captureCurrentPage() {
-    if (capturing) return;
+    if (capturing) {
+      observationPending = true;
+      return;
+    }
     const receipt = parseReceipt(root.document, root.location.href);
     if (!receipt) return;
     const serialized = JSON.stringify(receipt);
@@ -153,6 +157,10 @@
       lastReceipt = serialized;
     } finally {
       capturing = false;
+    }
+    if (observationPending) {
+      observationPending = false;
+      await captureCurrentPage();
     }
   }
 

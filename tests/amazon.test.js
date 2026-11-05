@@ -149,3 +149,29 @@ test('passive observation saves each stable page once, including after a failed 
     delete global.document; delete global.location; delete global.browser;
   }
 });
+
+test('an observation during storage is captured after acknowledgement even when the DOM then settles', async () => {
+  const saved = [];
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  global.document = doc(standard().replace('EXAMPLE PRODUCT 0', 'EXAMPLE INITIAL PRODUCT'));
+  global.location = { href: url() };
+  global.browser = { runtime: { async sendMessage(message) {
+    saved.push(message.receipt);
+    if (saved.length === 1) await held;
+    return { ok: true };
+  } } };
+  try {
+    const first = provider.observePage();
+    global.document.querySelector('[data-component="itemTitle"] a').textContent = 'EXAMPLE FINAL PRODUCT';
+    const overlapping = provider.observePage();
+    release();
+    await Promise.all([first, overlapping]);
+    assert.equal(saved.length, 2);
+    assert.equal(saved[1].items[0].title, 'EXAMPLE FINAL PRODUCT');
+    await provider.observePage();
+    assert.equal(saved.length, 2);
+  } finally {
+    delete global.document; delete global.location; delete global.browser;
+  }
+});
