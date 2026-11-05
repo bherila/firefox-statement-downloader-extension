@@ -142,6 +142,16 @@ test('storage refusal says the order was not saved and raises global attention w
   assert.equal(badges.get(1), '!'); assert.equal(badges.get(2), '!'); assert.equal(badges.get(99), '');
 });
 
+test('receipt privacy rejection raises attention without exposing the rejected text', async () => {
+  const { surface, sender, message, badges } = harness();
+  await surface.failed(sender(), ORDER, Object.assign(new Error('EXAMPLE PRIVATE TEXT'), { name: 'ReceiptPrivacyError' }));
+  const snapshot = await message({ action: 'popupSnapshot', tabId: 1 });
+  assert.equal(snapshot.current.reason, 'privacy');
+  assert.equal(snapshot.recent.length, 0);
+  assert.equal(JSON.stringify(snapshot).includes('EXAMPLE PRIVATE TEXT'), false);
+  assert.equal(badges.get(1), '!');
+});
+
 test('private popup responses never read or expose the source store, even while global attention is active', async () => {
   const { surface, message, sender, state, reads, badges } = harness([record()]);
   state.settings.stopReason = 'account_changed';

@@ -27,6 +27,13 @@ test('popup explains a storage refusal without pretending the order was saved', 
   assert.match(document.querySelector('#detail').textContent, /Export what's held here.*free room/);
 });
 
+test('popup explains the code privacy rejection without suggesting a storage cleanup', async () => {
+  const document = await popup({ ...basic, current: { state: 'storage_refused', reason: 'privacy', orderId: '100-1000000-1000000' } });
+  assert.match(document.querySelector('#current').textContent, /wasn't saved/);
+  assert.match(document.querySelector('#detail').textContent, /may contain a redeemable code/);
+  assert.doesNotMatch(document.querySelector('#detail').textContent, /free room|Export/);
+});
+
 test('private popup shows no Recent or queue data', async () => {
   const document = await popup({ ok: true, private: true });
   assert.equal(document.querySelector('#current').textContent, "Private windows aren't collected.");

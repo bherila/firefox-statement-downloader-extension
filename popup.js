@@ -31,7 +31,9 @@
     query('#history').hidden = true;
     if (current?.state === 'storage_refused') {
       query('#current').textContent = `${current.orderId ? `Order ${current.orderId}: ` : ''}This order wasn't saved.`;
-      query('#detail').textContent = "Firefox couldn't store it. Export what's held here, then free room in Settings and reload this page.";
+      query('#detail').textContent = current.reason === 'privacy'
+        ? 'Receipt text may contain a redeemable code. Nothing was saved. This receipt cannot be collected safely.'
+        : "Firefox couldn't store it. Export what's held here, then free room in Settings and reload this page.";
     } else if (current?.state === 'unreadable') {
       query('#current').textContent = current.orderId ? `Order ${current.orderId} couldn't be read.` : 'This page could not be read.';
       query('#detail').textContent = `Nothing was saved. It may still be loading, or ${merchant} may have changed this layout. Reload the page to try again.`;

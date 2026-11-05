@@ -129,7 +129,7 @@
       if (!(await policy(sender))?.enabled) return;
       storageRefused = true;
       tabStates.set(sender.tab.id, { key: page.key, current: { state: 'storage_refused', kind: page.kind === 'balance' ? 'gift-card-snapshot' : 'receipt',
-        orderId: page.orderId, reason: error?.name === 'QuotaExceededError' ? 'quota' : 'storage' } });
+        orderId: page.orderId, reason: error?.name === 'ReceiptPrivacyError' ? 'privacy' : error?.name === 'QuotaExceededError' ? 'quota' : 'storage' } });
       await refresh();
     }
 
