@@ -29,6 +29,7 @@ test('storage refresh cannot permit a second explicit upload while the first is 
   const scope = vm.createContext({ document, browser, TextEncoder, Uint8Array, Date });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/runtime.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-status.js'), 'utf8'), scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-list.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../options.js'), 'utf8'), scope);
   await new Promise(setImmediate);
   const button = document.querySelector('#upload');
@@ -47,17 +48,18 @@ test('storage refresh cannot permit a second explicit upload while the first is 
   assert.equal(button.disabled, false);
 });
 
-async function settingsPage(settings, response = async () => ({})) {
+async function settingsPage(settings, response = async () => ({}), records = []) {
   const { document } = parseHTML(fs.readFileSync(path.join(__dirname, '../options.html'), 'utf8'));
   const calls = [];
   const browser = { runtime: { async sendMessage(message) {
     calls.push(message);
-    if (message.action === 'importSnapshot') return { ok: true, settings, records: [], queue: {} };
+    if (message.action === 'importSnapshot') return { ok: true, settings, records, queue: {} };
     return { ok: true, ...await response(message) };
   } }, permissions: { async request() { return true; } } };
   const scope = vm.createContext({ document, browser, TextEncoder, Uint8Array, Date });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/runtime.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-status.js'), 'utf8'), scope);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-list.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../options.js'), 'utf8'), scope);
   await new Promise(setImmediate);
   return { document, calls };
@@ -107,4 +109,29 @@ test('balance capture is off by default and changes only through the explicit sw
   await new Promise(setImmediate);
   assert.equal(enabled, true);
   assert.equal(calls.filter((message) => message.action === 'configureCapturePreferences').length, 1);
+});
+
+test('settings exports held source bytes only, leaving sent metadata out of the archive', async () => {
+  const data = { order_id: '100-1000000-1000000', items: [{}], warnings: [] };
+  let archive;
+  const { document } = await settingsPage({ enabled: false, userId: 100000001 }, async (message) => {
+    if (message.action === 'downloadData') archive = JSON.parse(new TextDecoder().decode(new Uint8Array(message.data)));
+    return {};
+  }, [{ id: 'example-held', kind: 'receipt', userId: 100000001, status: 'local', createdAt: '2026-01-01T00:00:00.000Z', data },
+    { id: 'example-sent', kind: 'receipt', userId: 100000001, status: 'received', createdAt: '2026-01-02T00:00:00.000Z', summary: { orderId: '200-2000000-2000000', itemCount: 2, warnings: [] } }]);
+  document.querySelector('#export').click(); await new Promise(setImmediate);
+  assert.deepEqual(archive.receipts, [data]); assert.deepEqual(archive.gift_card_snapshots, []);
+});
+
+test('the rendered settings list shows one row per order and fifty rows per page', async () => {
+  const records = Array.from({ length: 120 }, (_, index) => ({ id: `example-${index}`, kind: 'receipt', userId: 100000001, status: 'received',
+    createdAt: new Date(1767225600000 + index).toISOString(), summary: { orderId: `100-${String(index).padStart(7, '0')}-1000000`, itemCount: 2, warnings: [] } }));
+  const { document } = await settingsPage({ enabled: false, userId: 100000001 }, async () => ({}), records);
+  assert.equal(document.querySelector('#receipts').children.length, 50);
+  document.querySelector('#next').click(); document.querySelector('#next').click();
+  assert.equal(document.querySelector('#receipts').children.length, 20);
+  assert.match(document.querySelector('#page').textContent, /Page 3 of 3/);
+  const search = document.querySelector('#search'); search.value = '100-0000001-1000000';
+  search.dispatchEvent(new document.defaultView.Event('input'));
+  assert.equal(document.querySelector('#receipts').children.length, 1);
 });

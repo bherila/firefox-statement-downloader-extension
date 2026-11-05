@@ -21,6 +21,7 @@
     .catch((error) => ({ ok: false, error: error.message || 'Import failed.' }));
   let syncTimer = null;
   async function flushAndSchedule() {
+    await store.cleanup?.();
     if (!await root.browser.permissions.contains({ origins: [`${FSD.importClient.ORIGIN}/*`] })) {
       const { settings } = await store.snapshot();
       if (settings.userId) await store.stop('access_revoked');
@@ -61,7 +62,7 @@
       });
     }
     if (message.action === 'listAmzReceipts' && isAmz(sender)) {
-      return safely(async () => ({ receipts: (await store.snapshot()).records.filter((record) => record.kind === 'receipt').map(({ id, data }) => ({ id, data })) }));
+      return safely(async () => ({ receipts: (await store.snapshot()).records.filter((record) => record.kind === 'receipt' && record.data).map(({ id, data }) => ({ id, data })) }));
     }
     if (message.action === 'captureAmzGiftCardSnapshot' && isAmz(sender) && isGiftCardPage(sender.url)) {
       return safely(async () => {
@@ -79,7 +80,7 @@
       });
     }
     if (message.action === 'listAmzGiftCardSnapshots' && isAmz(sender) && isGiftCardPage(sender.url)) {
-      return safely(async () => ({ snapshots: (await store.snapshot()).records.filter((record) => record.kind === 'gift-card-snapshot').map(({ id, data }) => ({ id, data })) }));
+      return safely(async () => ({ snapshots: (await store.snapshot()).records.filter((record) => record.kind === 'gift-card-snapshot' && record.data).map(({ id, data }) => ({ id, data })) }));
     }
     if (message.action === 'openImportOptions' && isAmz(sender)) {
       return safely(async () => { await root.browser.runtime.openOptionsPage(); });
@@ -96,6 +97,11 @@
       return result;
     });
     if (message.action === 'syncImports') return safely(flushAndSchedule);
+    if (message.action === 'configureRetention') return safely(async () => {
+      if (typeof message.keepCopy !== 'boolean') throw new Error('Invalid copy preference.');
+      return store.setRetention({ keepCopy: message.keepCopy });
+    });
+    if (message.action === 'forgetSentImports') return safely(() => store.forgetSentHistory());
     if (message.action === 'clearImports') return safely(() => store.clear());
     if (message.action === 'uploadImportFile') return safely(async () => {
       const { settings } = await store.snapshot();

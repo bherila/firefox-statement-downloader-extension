@@ -6,8 +6,10 @@
   const PAUSED = 'fsd:imports:paused';
   const RECORDS = 'fsd:imports:records';
   const STOPPED = 'fsd:imports:stopped';
+  const RETENTION = 'fsd:imports:retention';
   const PARTIAL_WAIT_MS = 60000;
-  const MAX_RECORDS = 2000;
+  const MAX_HELD_REVISIONS = 20;
+  const REPLACED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
   const MAX_SOURCE_BYTES = 512 * 1024;
 
   async function hash(bytes) {
@@ -29,16 +31,94 @@
       return result;
     };
     async function load() {
-      const saved = await storage.get([SETTINGS, RECORDS, PAUSED, STOPPED]);
-      const settings = { enabled: false, userId: null, userName: null, ...saved[SETTINGS] };
+      const saved = await storage.get([SETTINGS, RECORDS, PAUSED, STOPPED, RETENTION]);
+      const settings = { enabled: false, userId: null, userName: null, keepCopy: false, ...saved[SETTINGS] };
+      settings.everConnected = settings.everConnected === true || Boolean(settings.userId);
+      if (typeof saved[RETENTION]?.keepCopy === 'boolean') settings.keepCopy = saved[RETENTION].keepCopy;
       const stopped = saved[STOPPED];
       return {
         settings: { ...settings, ...(saved[PAUSED] || stopped ? { enabled: false } : {}),
           ...(stopped ? { stopReason: stopped.reason, lastError: stopped.message, accountConflict: stopped.accountConflict || null } : {}) },
-        records: saved[RECORDS] || [],
+        // This projection is read-only. Serialized writers persist migration;
+        // even a popup racing startup cannot export default-discarded contents.
+        records: (saved[RECORDS] || []).map((record) => normalizeRecord(record, settings)),
       };
     }
     const saveRecords = (records) => storage.set({ [RECORDS]: records });
+    const sourceKind = (record) => record.kind || 'receipt';
+    const supportedSource = (record) => ['receipt', 'gift-card-snapshot'].includes(sourceKind(record));
+    const held = (record) => supportedSource(record) && Boolean(record.data);
+    function sourceSummary(record) {
+      const data = record.data;
+      const previous = record.summary || {};
+      const rawWarnings = data?.warnings ?? previous.warnings ?? [];
+      const warnings = Array.isArray(rawWarnings) ? rawWarnings : ['unrecognized_warning'];
+      const orderId = data?.order_id || previous.orderId;
+      const marketplace = data?.marketplace || previous.marketplace;
+      const layout = data?.layout || previous.layout;
+      const count = (value, limit) => Number.isSafeInteger(value) && value >= 0 && value <= limit ? value : 0;
+      const summary = {
+        orderId: sourceKind(record) === 'receipt' && typeof orderId === 'string' && /^\d{3}-\d{7}-\d{7}$/.test(orderId) ? orderId : null,
+        marketplace: typeof marketplace === 'string' && /^[a-z0-9.-]{1,100}\.[a-z]{2,}$/.test(marketplace) ? marketplace : null,
+        layout: sourceKind(record) === 'receipt' && ['standard', 'whole_foods', 'fresh'].includes(layout) ? layout : null,
+        itemCount: sourceKind(record) === 'receipt' ? count(data?.items?.length ?? previous.itemCount, 500) : 0,
+        warnings: warnings.slice(0, 50).map((warning) => typeof warning === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(warning) ? warning : 'unrecognized_warning'),
+      };
+      if (sourceKind(record) === 'gift-card-snapshot') Object.assign(summary, {
+        activityCount: count(data?.activities?.length ?? previous.activityCount, 1000),
+      });
+      return summary;
+    }
+    function normalizeRecord(record, settings) {
+      if (!supportedSource(record)) return record;
+      const normalized = { ...record, summary: sourceSummary(record) };
+      if (record.status === 'received') {
+        normalized.sentAt = record.sentAt || settings.lastSentAt || record.createdAt;
+        if (settings.keepCopy !== true) delete normalized.data;
+      }
+      return normalized;
+    }
+    function orderKey(record) {
+      if (sourceKind(record) !== 'receipt' || !record.summary?.orderId || !record.summary.marketplace) return null;
+      return JSON.stringify([record.summary.marketplace, record.summary.orderId, record.userId ?? null]);
+    }
+    function retainedRecords(records, settings, enforceKey = null) {
+      const groups = new Map();
+      const removed = new Set();
+      for (const record of records) {
+        const key = orderKey(record);
+        if (key === null) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(record);
+      }
+      for (const [key, group] of groups) {
+        // Insertion order is the capture order, including same-clock captures.
+        const heldGroup = group.filter(held);
+        const newest = heldGroup[heldGroup.length - 1];
+        const complete = [...group].reverse().find((record) => !record.summary.warnings.length);
+        const protectedIds = new Set([newest?.id, complete?.id]);
+        const mayDelete = (record) => record.status === 'received' || !settings.everConnected;
+        for (let index = 0; index < group.length; index += 1) {
+          const record = group[index];
+          if (!held(record)) continue;
+          const replacement = group.slice(index + 1).find((later) => record.summary.warnings.length || !later.summary.warnings.length);
+          if (replacement && !record.replacedAt) record.replacedAt = replacement.createdAt;
+          if (!protectedIds.has(record.id) && mayDelete(record) && record.replacedAt
+            && now() - Date.parse(record.replacedAt) >= REPLACED_RETENTION_MS) removed.add(record.id);
+        }
+        let remaining = heldGroup.filter((record) => !removed.has(record.id));
+        while (remaining.length > MAX_HELD_REVISIONS) {
+          const oldest = remaining.find((record) => !protectedIds.has(record.id) && mayDelete(record));
+          if (!oldest) {
+            if (key === enforceKey) throw new Error('This order already has 20 unsent revisions. Send them or clear held sources in settings before saving another.');
+            break; // Legacy overflow must not prevent sending protected evidence.
+          }
+          removed.add(oldest.id);
+          remaining = remaining.filter((record) => record.id !== oldest.id);
+        }
+      }
+      return records.filter((record) => !removed.has(record.id));
+    }
 
     async function capture(receipt) {
       // Reconstruct an allowlisted payload; never retain DOM/headers/addresses
@@ -129,7 +209,7 @@
     }
 
     function eligibleAt(record) {
-      if (!record.data.warnings.length) return 0;
+      if (!record.summary.warnings.length) return 0;
       return record.eligibleAt || Date.parse(record.createdAt) + PARTIAL_WAIT_MS;
     }
 
@@ -162,25 +242,71 @@
         let record = records.find((item) => item.id === id);
         const alreadySaved = Boolean(record);
         if (!record) {
-          if (records.length >= MAX_RECORDS) throw new Error('Source storage is full. Export and clear sources in settings.');
           const prefix = kind === 'receipt' ? `amz-${data.order_id}` : 'amz-gift-card-balance';
           record = { id, kind, provider, data,
             filename: `${prefix}-${id.slice(0, 12)}.json`, contentType: 'application/json',
             createdAt: new Date(now()).toISOString(), userId: settings.userId, status: 'local',
             ...(data.warnings.length ? { eligibleAt: now() + PARTIAL_WAIT_MS } : {}) };
+          record.summary = sourceSummary(record);
           records.push(record);
         }
+        let changed = !alreadySaved;
         if (!data.warnings.length) {
+          // A sent marker proves this hash is already safe remotely. Use the
+          // incoming data only for comparison; never reattach it to that marker.
+          const complete = { ...record, data };
           for (const partial of records) {
-            if (partial.status === 'local' && partial.data.warnings.length && now() < eligibleAt(partial)
-              && sameSource(partial, record)) {
-              partial.status = 'suppressed';
-              partial.suppressedBy = id;
+            if (partial.status === 'local' && partial.data && partial.summary.warnings.length && now() < eligibleAt(partial)
+              && sameSource(partial, complete)) {
+              partial.status = 'suppressed'; partial.suppressedBy = id; changed = true;
             }
           }
         }
-        await saveRecords(records);
-        return { id, count: records.length, alreadySaved };
+        if (!changed) return { id, count: records.length, alreadySaved };
+        // Validate capacity entirely in memory before committing any migration,
+        // replacement timestamp, or suppression from this capture.
+        const retained = retainedRecords(records, settings, alreadySaved ? null : orderKey(record));
+        await storage.set({ [SETTINGS]: settings, [RECORDS]: retained });
+        return { id, count: retained.length, alreadySaved };
+      });
+    }
+
+    async function persistIfChanged(settings, records) {
+      const raw = await storage.get([SETTINGS, RECORDS]);
+      const changes = {};
+      if (JSON.stringify(raw[SETTINGS]) !== JSON.stringify(settings)) changes[SETTINGS] = settings;
+      if (JSON.stringify(raw[RECORDS] || []) !== JSON.stringify(records)) changes[RECORDS] = records;
+      if (Object.keys(changes).length) await storage.set(changes);
+    }
+
+    async function cleanup() {
+      return serial(async () => {
+        const { settings, records } = await load();
+        const retained = retainedRecords(records, settings);
+        await persistIfChanged(settings, retained);
+        return { removed: records.length - retained.length };
+      });
+    }
+
+    async function setRetention(options) {
+      if (typeof options?.keepCopy !== 'boolean') throw new Error('Choose whether to keep sent copies.');
+      // Persist intent without waiting for the network writer. ACK processing
+      // rechecks this key before deciding whether this batch keeps its copies.
+      await storage.set({ [RETENTION]: { keepCopy: options.keepCopy } });
+      return serial(async () => {
+        const { settings, records } = await load();
+        const retained = retainedRecords(records, settings);
+        await persistIfChanged(settings, retained);
+        return { keepCopy: settings.keepCopy };
+      });
+    }
+
+    async function forgetSentHistory() {
+      return serial(async () => {
+        const { records } = await load();
+        const retained = records.filter((record) => record.status !== 'received' || !supportedSource(record));
+        await saveRecords(retained);
+        return { forgotten: records.length - retained.length };
       });
     }
 
@@ -227,6 +353,7 @@
         const throttle = previous.userId === active.userId
           ? { nextSyncAt: previous.nextSyncAt, retryAt: previous.retryAt, retryAttempt: previous.retryAttempt, retryKind: previous.retryKind } : {};
         await storage.set({ [SETTINGS]: { enabled: true, ...active, ...throttle,
+          keepCopy: previous.keepCopy === true, everConnected: true,
           lastSentAt: previous.lastSentAt || null, stopReason: null, accountConflict: null, lastError: null },
           [RECORDS]: records, [PAUSED]: false, [STOPPED]: null });
         if (version !== preferenceVersion) {
@@ -243,7 +370,7 @@
     }
 
     function pendingRecords(records, userId) {
-      return records.filter((record) => record.status === 'local' && record.userId === userId);
+      return records.filter((record) => record.status === 'local' && record.userId === userId && record.data);
     }
 
     async function snapshot() {
@@ -295,11 +422,14 @@
               && Number.isSafeInteger(result.remoteId) && result.remoteId > 0))) {
             throw new Error('Batch acknowledgement was incomplete.');
           }
+          settings.keepCopy = (await load()).settings.keepCopy;
           for (const record of batch) {
             const result = results.find((item) => item.id === record.id);
             record.status = 'received'; record.remoteId = result.remoteId; record.error = null;
+            record.sentAt = new Date(now()).toISOString();
+            if (settings.keepCopy !== true) delete record.data;
           }
-          await saveRecords(records);
+          await saveRecords(retainedRecords(records, settings));
           const nextSyncAt = now() + 5000;
           await storage.set({ [SETTINGS]: { ...settings, retryAt: null, retryKind: null, retryAttempt: 0,
             lastError: null, nextSyncAt, lastSentAt: new Date(now()).toISOString() } });
@@ -341,7 +471,7 @@
     }
 
     return {
-      capture, captureGiftCardSnapshot, configure, flush, stop, snapshot,
+      capture, captureGiftCardSnapshot, configure, flush, stop, snapshot, setRetention, cleanup, forgetSentHistory,
       clear: () => serial(() => saveRecords([])),
     };
   }

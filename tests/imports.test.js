@@ -666,3 +666,321 @@ test('snapshot suppression requires matching activity-page evidence, multiplicit
   const state = await store.snapshot();
   assert.equal(state.records.find((record) => record.data.warnings.includes('item_price_missing')).status, 'local');
 });
+
+const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
+const settingsKey = 'fsd:imports:settings';
+const recordsKey = 'fsd:imports:records';
+function revision(index, partial = false) {
+  const data = receipt(); data.status_text = `Example revision ${index}`;
+  if (partial) data.warnings = ['item_price_missing'];
+  return data;
+}
+
+test('verified acknowledgements drop source contents by default and retain only safe summaries and sent metadata', async () => {
+  const { store, clock, saved } = harness();
+  await store.capture(receipt()); await store.captureGiftCardSnapshot(giftCardSnapshot());
+  await store.configure(true);
+  await store.flush(); clock.value += 5000; await store.flush();
+  const { records } = await store.snapshot();
+  for (const record of records) {
+    assert.equal(record.status, 'received'); assert.equal(Object.hasOwn(record, 'data'), false);
+    assert.ok(record.sentAt); assert.ok(record.remoteId); assert.ok(record.id);
+    for (const forbidden of ['items', 'charges', 'total_cents', 'source_url', 'balance_cents', 'balanceCents', 'activities']) assert.equal(Object.hasOwn(record.summary, forbidden), false);
+    assert.ok(!JSON.stringify(record.summary).includes('EXAMPLE PRODUCT'));
+    assert.ok(!JSON.stringify(record.summary).includes('1250'));
+  }
+  assert.deepEqual(records[0].summary, { orderId: receipt().order_id, marketplace: amz.marketplace,
+    layout: 'standard', itemCount: 1, warnings: [] });
+  assert.equal(records[1].summary.activityCount, 1);
+  assert.equal(saved[recordsKey].every((record) => !Object.hasOwn(record, 'data')), true);
+});
+
+test('contents not covered by a verified batch acknowledgement remain held, including other source kinds', async () => {
+  const { store, client, clock } = harness();
+  await store.capture(receipt()); await store.captureGiftCardSnapshot(giftCardSnapshot()); await store.configure(true);
+  client.uploadBatch = async () => [];
+  const retry = await store.flush();
+  assert.equal((await store.snapshot()).records.every((record) => Object.hasOwn(record, 'data')), true);
+  client.uploadBatch = async (records) => records.map((record) => ({ id: record.id, remoteId: 1, status: 'received' }));
+  clock.value = retry.nextSyncAt;
+  await store.flush();
+  const records = (await store.snapshot()).records;
+  assert.equal(records[0].status, 'received'); assert.equal(Object.hasOwn(records[0], 'data'), false);
+  assert.equal(records[1].status, 'local'); assert.ok(records[1].data);
+});
+
+test('unchanged sent hashes write and send nothing while a changed order becomes a new dropped revision', async () => {
+  const { store, storage, uploads, clock } = harness();
+  await store.capture(receipt()); await store.configure(true); await store.flush();
+  const before = JSON.stringify(await store.snapshot());
+  const original = storage.set; let writes = 0;
+  storage.set = async (...args) => { writes += 1; return original(...args); };
+  assert.equal((await store.capture(receipt())).alreadySaved, true);
+  await store.flush();
+  assert.equal(writes, 0); assert.equal(uploads.length, 1);
+  assert.equal(JSON.stringify(await store.snapshot()), before);
+  assert.equal((await store.capture(revision(1))).alreadySaved, false);
+  clock.value += 5000; await store.flush();
+  const state = await store.snapshot();
+  assert.equal(uploads.length, 2); assert.equal(state.records.length, 2);
+  assert.equal(state.records.every((record) => record.status === 'received' && !record.data), true);
+});
+
+test('forgetting sent history permits a revisit while preserving every unsent local/refused/suppressed source', async () => {
+  const { store, storage, uploads, clock } = harness();
+  await store.setRetention({ keepCopy: true });
+  await store.capture(receipt()); await store.configure(true); await store.flush();
+  await store.configure(false);
+  const waiting = await store.capture(distinctReceipt(1));
+  const partial = revision(2, true); partial.order_id = distinctReceipt(2).order_id; partial.source_url = distinctReceipt(2).source_url;
+  await store.capture(partial); await store.capture(distinctReceipt(2));
+  const raw = (await storage.get([recordsKey]))[recordsKey];
+  raw.find((record) => record.id === waiting.id).status = 'refused'; await storage.set({ [recordsKey]: raw });
+  assert.equal((await store.forgetSentHistory()).forgotten, 1);
+  const remaining = (await store.snapshot()).records;
+  assert.equal(remaining.length, 3);
+  assert.equal(remaining.every((record) => record.status !== 'received' && record.data), true);
+  assert.ok(remaining.some((record) => record.status === 'suppressed'));
+  assert.ok(remaining.some((record) => record.status === 'refused'));
+  assert.equal((await store.capture(receipt())).alreadySaved, false);
+  // The same stable hash is submitted again; remote hash deduplication remains applicable.
+  await store.configure(true); clock.value += 5000; await store.flush();
+  assert.equal(uploads.filter((item) => item.record.id === uploads[0].record.id).length, 2);
+});
+
+test('turning keep-copy off discards confirmed copies and turning it back on cannot restore them', async () => {
+  const { store, saved } = harness();
+  await store.setRetention({ keepCopy: true }); await store.capture(receipt());
+  await store.configure(true); await store.flush();
+  assert.ok((await store.snapshot()).records[0].data);
+  await store.capture(distinctReceipt(1));
+  await store.setRetention({ keepCopy: false });
+  let records = (await store.snapshot()).records;
+  assert.equal(Object.hasOwn(records[0], 'data'), false); assert.ok(records[1].data);
+  assert.equal(Object.hasOwn(saved[recordsKey][0], 'data'), false);
+  await store.setRetention({ keepCopy: true });
+  records = (await store.snapshot()).records;
+  assert.equal(Object.hasOwn(records[0], 'data'), false); assert.ok(records[1].data);
+  assert.equal((await store.snapshot()).settings.keepCopy, true);
+});
+
+test('legacy reads hide default-discarded contents without writing and serialized cleanup persists migration', async () => {
+  const { store, storage, saved, clock } = harness();
+  await store.capture(receipt());
+  const legacy = saved[recordsKey];
+  delete legacy[0].summary; legacy[0].status = 'received'; legacy[0].remoteId = 1;
+  await storage.set({ [recordsKey]: legacy, [settingsKey]: { enabled: false, userId: 1 } });
+  const original = storage.set; let writes = 0;
+  storage.set = async (...args) => { writes += 1; return original(...args); };
+  const viewed = await store.snapshot();
+  assert.equal(writes, 0); assert.equal(Object.hasOwn(viewed.records[0], 'data'), false);
+  assert.equal(viewed.records[0].summary.itemCount, 1); assert.equal(viewed.settings.everConnected, true);
+  assert.ok(saved[recordsKey][0].data);
+  await store.cleanup();
+  assert.equal(Object.hasOwn(saved[recordsKey][0], 'data'), false);
+  assert.equal(saved[recordsKey][0].sentAt, new Date(clock.value).toISOString());
+  assert.equal(saved[settingsKey].everConnected, true);
+});
+
+test('legacy keep-copy preference is honored during migration and summary extras are removed', async () => {
+  const { store, storage, saved } = harness();
+  await store.capture(receipt());
+  const records = saved[recordsKey]; records[0].status = 'received'; records[0].remoteId = 1;
+  records[0].summary = { items: ['EXAMPLE PRIVATE ITEM'], total_cents: 1000, source_url: 'https://example.test/private' };
+  await storage.set({ [recordsKey]: records, [settingsKey]: { enabled: false, userId: 1, keepCopy: true } });
+  await store.cleanup();
+  assert.ok(saved[recordsKey][0].data);
+  assert.equal(Object.hasOwn(saved[recordsKey][0].summary, 'items'), false);
+  assert.equal(Object.hasOwn(saved[recordsKey][0].summary, 'total_cents'), false);
+  assert.equal(Object.hasOwn(saved[recordsKey][0].summary, 'source_url'), false);
+});
+
+test('seven-day cleanup deletes replaced sent copies while preserving the newest and first replacement time', async () => {
+  const { store, clock } = harness();
+  await store.setRetention({ keepCopy: true }); await store.configure(true);
+  await store.capture(revision(0)); await store.flush();
+  clock.value += 5000; const replacedAt = clock.value;
+  await store.capture(revision(1)); await store.flush();
+  clock.value += 5000; await store.capture(revision(2)); await store.flush();
+  let records = (await store.snapshot()).records;
+  assert.equal(records[0].replacedAt, new Date(replacedAt).toISOString());
+  clock.value = replacedAt + SEVEN_DAYS - 1; await store.cleanup(); assert.equal((await store.snapshot()).records.length, 3);
+  clock.value += 1; await store.cleanup();
+  records = (await store.snapshot()).records;
+  assert.equal(records.length, 2); assert.equal(records[0].data.status_text, 'Example revision 1');
+  clock.value += 5000; await store.cleanup();
+  records = (await store.snapshot()).records;
+  assert.equal(records.length, 1); assert.equal(records[0].data.status_text, 'Example revision 2');
+});
+
+test('an unsent replaced revision survives seven days after connection even while paused and suppressed', async () => {
+  const { store, clock } = harness();
+  await store.configure(true); await store.configure(false);
+  await store.capture(revision(0, true)); clock.value += 1000; await store.capture(revision(1));
+  assert.equal((await store.snapshot()).records[0].status, 'suppressed');
+  clock.value += SEVEN_DAYS; await store.cleanup();
+  const records = (await store.snapshot()).records;
+  assert.equal(records.length, 2); assert.equal(records.every((record) => record.data), true);
+});
+
+test('never-connected replacements age out after seven days while the newest remains', async () => {
+  const { store, clock } = harness();
+  await store.capture(revision(0)); clock.value += 1000; await store.capture(revision(1));
+  clock.value += SEVEN_DAYS; await store.cleanup();
+  const state = await store.snapshot();
+  assert.equal(state.settings.everConnected, false); assert.equal(state.records.length, 1);
+  assert.equal(state.records[0].data.status_text, 'Example revision 1');
+});
+
+test('at twenty held revisions a new revision evicts the oldest sent copy before seven days', async () => {
+  const { store, clock } = harness();
+  await store.setRetention({ keepCopy: true }); await store.configure(true);
+  for (let index = 0; index < 20; index += 1) {
+    await store.capture(revision(index)); await store.flush(); clock.value += 5000;
+  }
+  await store.capture(revision(20));
+  const records = (await store.snapshot()).records;
+  assert.equal(records.length, 20); assert.equal(records[0].data.status_text, 'Example revision 1');
+  assert.equal(records[19].data.status_text, 'Example revision 20');
+});
+
+test('twenty connected unsent revisions refuse another save without mutating or deleting any evidence', async () => {
+  const { store, clock, saved } = harness();
+  await store.configure(true); await store.configure(false);
+  for (let index = 0; index < 20; index += 1) { await store.capture(revision(index)); clock.value += 1000; }
+  const before = JSON.stringify(saved);
+  await assert.rejects(store.capture(revision(20)), /20 unsent revisions/);
+  assert.equal(JSON.stringify(saved), before);
+  assert.equal((await store.snapshot()).records.length, 20);
+  // A different order remains independent of this order's capacity.
+  await store.capture(distinctReceipt(1)); assert.equal((await store.snapshot()).records.length, 21);
+});
+
+test('never-connected capacity evicts the oldest but partial revisions cannot evict the latest complete source', async () => {
+  const { store, clock } = harness();
+  await store.capture(revision(0));
+  for (let index = 1; index <= 20; index += 1) { clock.value += 1000; await store.capture(revision(index, true)); }
+  const records = (await store.snapshot()).records;
+  assert.equal(records.length, 20);
+  assert.equal(records[0].data.status_text, 'Example revision 0');
+  assert.equal(records[1].data.status_text, 'Example revision 2');
+  assert.equal(records[19].data.status_text, 'Example revision 20');
+  clock.value += SEVEN_DAYS; await store.cleanup();
+  assert.deepEqual((await store.snapshot()).records.map((record) => record.data.status_text), ['Example revision 0', 'Example revision 20']);
+});
+
+test('sent thin markers do not count toward held capacity or age out', async () => {
+  const { store, clock } = harness(); await store.configure(true);
+  for (let index = 0; index < 25; index += 1) { await store.capture(revision(index)); await store.flush(); clock.value += 5000; }
+  clock.value += SEVEN_DAYS; await store.cleanup();
+  const records = (await store.snapshot()).records;
+  assert.equal(records.length, 25); assert.equal(records.every((record) => !record.data), true);
+});
+
+test('gift-card activity pages neither replace each other nor enter receipt per-order limits', async () => {
+  const { store, clock } = harness(); await store.setRetention({ keepCopy: true });
+  for (let index = 0; index < 25; index += 1) {
+    const source = giftCardSnapshot(); source.balance_cents += index;
+    await store.captureGiftCardSnapshot(source); clock.value += 1000;
+  }
+  clock.value += SEVEN_DAYS; await store.cleanup();
+  const records = (await store.snapshot()).records;
+  assert.equal(records.length, 25); assert.equal(records.every((record) => record.data && !record.replacedAt), true);
+  assert.equal(records.every((record) => !Object.hasOwn(record.summary, 'balanceCents')), true);
+});
+
+test('retention changes and cleanup serialize with acknowledgement while snapshot stays available', async () => {
+  const { store, client, clock } = harness();
+  await store.setRetention({ keepCopy: true }); await store.capture(revision(0)); await store.configure(true);
+  const started = deferred(); const held = deferred(); const normal = client.uploadBatch.bind(client);
+  client.uploadBatch = async (...args) => { started.resolve(); await held.promise; return normal(...args); };
+  const sending = store.flush(); await started.promise;
+  const change = store.setRetention({ keepCopy: false });
+  const cleanup = store.cleanup();
+  const capture = store.capture(revision(1));
+  assert.equal((await store.snapshot()).queue.phase, 'sending');
+  assert.ok((await store.snapshot()).records[0].data);
+  clock.value += 1000; held.resolve();
+  await Promise.all([sending, change, cleanup, capture]);
+  const state = await store.snapshot();
+  assert.equal(state.records.length, 2); assert.equal(state.settings.keepCopy, false);
+  assert.equal(Object.hasOwn(state.records[0], 'data'), false); assert.ok(state.records[1].data);
+});
+
+
+test('per-order capacity and replacement are isolated by account pin and marketplace', async () => {
+  const { store, storage, saved, client, clock } = harness();
+  await store.configure(true); await store.configure(false);
+  for (let index = 0; index < 20; index += 1) { await store.capture(revision(index)); clock.value += 1000; }
+  const oldIds = (await store.snapshot()).records.map((record) => record.id);
+  client.session = async () => ({ userId: 2 });
+  await store.configure(true, { useNewAccount: true }); await store.configure(false);
+  await store.capture(revision(20));
+  assert.equal((await store.snapshot()).records.length, 21);
+  assert.deepEqual((await store.snapshot()).records.filter((record) => record.userId === 1).map((record) => record.id), oldIds);
+  // Imported legacy observations from another marketplace must never collide.
+  const records = saved[recordsKey];
+  const otherMarket = structuredClone(records[0]); otherMarket.id = 'example-other-market'; otherMarket.userId = 2;
+  otherMarket.data.marketplace = 'merchant.example.test'; otherMarket.summary.marketplace = 'merchant.example.test';
+  delete otherMarket.replacedAt;
+  records.push(otherMarket); await storage.set({ [recordsKey]: records });
+  clock.value += SEVEN_DAYS; await store.cleanup();
+  const state = await store.snapshot();
+  assert.ok(state.records.some((record) => record.id === 'example-other-market' && !record.replacedAt));
+  assert.equal(state.records.filter((record) => record.userId === 1).length, 20);
+});
+
+test('cleanup preserves connected refused sources and unrelated document records regardless of receipt replacement age', async () => {
+  const { store, storage, saved, clock } = harness();
+  await store.configure(true); await store.configure(false);
+  await store.capture(revision(0)); clock.value += 1000; await store.capture(revision(1));
+  const records = saved[recordsKey]; records[0].status = 'refused';
+  records.push({ id: 'example-unrelated-document', kind: 'file', status: 'local', userId: 1,
+    createdAt: records[0].createdAt, data: { order_id: receipt().order_id, marketplace: amz.marketplace, contents: 'EXAMPLE DOCUMENT' } });
+  await storage.set({ [recordsKey]: records }); clock.value += SEVEN_DAYS; await store.cleanup();
+  const state = await store.snapshot();
+  assert.equal(state.records[0].status, 'refused'); assert.ok(state.records[0].data);
+  assert.ok(state.records.find((record) => record.id === 'example-unrelated-document').data);
+  assert.equal(state.records.length, 3);
+});
+
+test('keep-copy intent changed during an in-flight batch controls that batch before acknowledgement', async () => {
+  for (const keepCopy of [true, false]) {
+    const { store, client, saved } = harness();
+    await store.setRetention({ keepCopy: !keepCopy }); await store.capture(receipt()); await store.configure(true);
+    const started = deferred(); const held = deferred(); const normal = client.uploadBatch.bind(client);
+    client.uploadBatch = async (...args) => { started.resolve(); await held.promise; return normal(...args); };
+    const sending = store.flush(); await started.promise;
+    const changing = store.setRetention({ keepCopy });
+    await new Promise(setImmediate);
+    assert.equal((await store.snapshot()).settings.keepCopy, keepCopy);
+    assert.equal(saved['fsd:imports:retention'].keepCopy, keepCopy);
+    held.resolve(); await Promise.all([sending, changing]);
+    assert.equal(Boolean(saved[recordsKey][0].data), keepCopy);
+    assert.equal(Boolean((await store.snapshot()).records[0].data), keepCopy);
+  }
+});
+
+test('routine cleanup and a duplicate sent capture perform no storage writes after migration is complete', async () => {
+  const { store, storage } = harness();
+  await store.capture(receipt()); await store.configure(true); await store.flush();
+  const original = storage.set; let writes = 0;
+  storage.set = async (...args) => { writes += 1; return original(...args); };
+  await store.capture(receipt()); await store.cleanup(); await store.flush(); await store.cleanup();
+  assert.equal(writes, 0);
+});
+
+
+test('legacy thin-summary migration cannot retain nested source figures or arbitrary free text', async () => {
+  const { store, storage, saved, clock } = harness();
+  await storage.set({ [settingsKey]: { userId: 1, enabled: false }, [recordsKey]: [{
+    id: 'example-legacy-marker', kind: 'receipt', status: 'received', userId: 1,
+    createdAt: new Date(clock.value).toISOString(), remoteId: 1,
+    summary: { orderId: receipt().order_id, marketplace: { total_cents: 1234 }, layout: { items: ['EXAMPLE PRIVATE ITEM'] },
+      itemCount: ['EXAMPLE PRIVATE ITEM'], warnings: 'EXAMPLE PRIVATE FREE TEXT', source_url: 'https://example.test/private' },
+  }] });
+  await store.cleanup();
+  const summary = saved[recordsKey][0].summary;
+  assert.deepEqual(summary, { orderId: receipt().order_id, marketplace: null, layout: null, itemCount: 0, warnings: ['unrecognized_warning'] });
+  assert.ok(!JSON.stringify(summary).includes('EXAMPLE PRIVATE'));
+});

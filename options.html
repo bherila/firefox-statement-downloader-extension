@@ -37,11 +37,23 @@
     </section>
     <section aria-labelledby="receipts-title">
       <h2 id="receipts-title">Collected sources</h2>
-      <p id="counts"></p>
-      <p>Changed sources are kept as separate revisions. A partial source waits one minute before sending, so a page that finishes loading sends its complete revision instead. Sources refused by pfifi.com stay here with their reason while other sources continue. Gift-card snapshots contain the current balance and the activity page you viewed; they don’t claim a complete history or reconcile a wallet. Storage holds up to 2,000 revisions; export before clearing.</p>
-      <button id="export" type="button">Export all sources as JSON</button>
-      <button id="clear" type="button">Clear local sources…</button>
-      <ul id="receipts"></ul>
+      <p id="counts">Loading saved receipts…</p>
+      <p>Changed sources are kept as separate revisions. A partial source waits one minute before sending, so a page that finishes loading sends its complete revision instead. Sources refused by pfifi.com stay here with their reason while other sources continue. Gift-card snapshots contain the current balance and the activity page you viewed; they don’t claim a complete history or reconcile a wallet. Up to 20 held revisions per order. Replaced revisions are deleted after 7 days; unsent revisions are protected if you have ever connected. If never connected, deletion runs on schedule. The newest held revision stays.</p>
+      <label><input id="keep-copy" type="checkbox"> Keep a copy here after sending</label>
+      <p>By default, confirmed contents leave this browser. A small sent record stays. Sent receipts can be exported from <a href="https://pfifi.com/finance/receipts" target="_blank" rel="noreferrer">pfifi.com</a>.</p>
+      <button id="export" type="button">Export what’s held here as JSON</button>
+      <button id="forget-sent" type="button">Forget sent history…</button>
+      <button id="clear" type="button">Clear everything…</button>
+      <div id="filters" role="tablist" aria-label="Saved receipts">
+        <button type="button" role="tab" data-filter="attention">Needs attention</button>
+        <button type="button" role="tab" data-filter="waiting">Waiting</button>
+        <button type="button" role="tab" data-filter="sent">Sent</button>
+        <button type="button" role="tab" data-filter="other">Other account</button>
+        <button type="button" role="tab" data-filter="all" aria-selected="true">All</button>
+      </div>
+      <label>Search orders or merchants <input id="search" type="search"></label>
+      <ul id="receipts" aria-live="polite"></ul>
+      <button id="previous" type="button" disabled>Previous</button><span id="page"></span><button id="next" type="button" disabled>Next</button>
     </section>
     <section aria-labelledby="files-title">
       <h2 id="files-title">Import statements and other documents</h2>
@@ -59,6 +71,7 @@
   </main>
   <script src="core/runtime.js"></script>
   <script src="core/import-status.js"></script>
+  <script src="core/import-list.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

@@ -27,3 +27,5 @@ new payload hashes merely because time passed.
 These are source observations, not a gift-card ledger or a claim that a merchant account
 has been reconciled. A complete history, overlapping pages, split payments, refunds,
 individual-card balances, and expiration terms need their own reviewed workflows.
+
+Confirmed snapshot contents follow the default drop-after-send preference. Only kind, marketplace, activity count, warning codes, receiving account and timestamps remain; no balances or activity amounts remain in the sent marker. Keeping a copy retains still-held payloads. Receipt per-order replacement/cap rules do not infer an activity-page identity for these observations.
