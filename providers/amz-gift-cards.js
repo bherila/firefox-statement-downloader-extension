@@ -91,46 +91,44 @@
   let capturing = false;
   let observationPending = false;
   let lastSnapshot = '';
+  let generation = null;
   async function captureCurrentPage() {
+    if (root.browser.extension?.inIncognitoContext) return;
     if (capturing) { observationPending = true; return; }
-    const snapshot = parseSnapshot(root.document, root.location.href);
-    if (!snapshot) return;
-    const serialized = JSON.stringify(snapshot);
-    if (serialized === lastSnapshot) return;
     capturing = true;
     try {
+      // Read the preference before touching balance or activity cells.
+      const policy = await message('amzCapturePolicy');
+      if (!policy.enabled) { lastSnapshot = ''; return; }
+      if (generation !== policy.generation) { generation = policy.generation; lastSnapshot = ''; }
+      const snapshot = parseSnapshot(root.document, root.location.href);
+      if (!snapshot) { lastSnapshot = ''; await message('amzPageStatus', { state: 'unreadable' }); return; }
+      const serialized = JSON.stringify(snapshot);
+      if (serialized === lastSnapshot) return;
       await message('captureAmzGiftCardSnapshot', { snapshot });
       lastSnapshot = serialized;
     } finally {
       capturing = false;
-    }
-    if (observationPending) {
-      observationPending = false;
-      await captureCurrentPage();
+      if (observationPending) {
+        observationPending = false;
+        await captureCurrentPage();
+      }
     }
   }
 
   /** @type {FsdProvider} */
   const provider = {
-    id: 'amz-gift-cards', label: 'AMZ gift-card balance and activity', requiresDateRange: false,
+    id: 'amz-gift-cards', label: `${FSD.amz.displayName} gift-card balance and activity`, requiresDateRange: false, passive: true,
     observePage: captureCurrentPage,
     isSupportedPage: () => Boolean(pageKind(root.location.href)),
     findMountPoint: () => root.document.querySelector('#gc-balance-table h1, h1'),
-    renderControls(container) {
-      const description = root.document.createElement('p');
-      description.textContent = 'The current gift-card balance and this page’s activity are saved automatically. Browse Previous and Next yourself to collect other pages. No pages are opened or requested for you. Claim codes are excluded; these snapshots do not claim a complete or reconciled account history.';
-      const button = root.document.createElement('button');
-      button.type = 'button';
-      button.textContent = 'Import settings and collected sources';
-      button.addEventListener('click', () => message('openImportOptions').catch(() => {}));
-      container.append(description, button);
-    },
+    renderControls() {},
     async readOptions() { return {}; },
     async discoverDocuments() {
       await captureCurrentPage();
       const result = await message('listAmzGiftCardSnapshots');
       return result.snapshots.map((snapshot) => FSD.normalizeDocument('amz-gift-cards', {
-        id: snapshot.id, title: `AMZ gift-card activity (${snapshot.data.activities.length} rows)`,
+        id: snapshot.id, title: `${FSD.amz.displayName} gift-card activity (${snapshot.data.activities.length} rows)`,
         category: 'gift-card-balance', filename: `GiftCards/AMZ/${snapshot.id.slice(0, 12)}.json`,
         metadata: { snapshot: snapshot.data },
       }));
