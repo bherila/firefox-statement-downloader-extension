@@ -2,6 +2,7 @@
   'use strict';
   /** @returns {any} */
   const query = (selector) => root.document.querySelector(selector);
+  query('#merchant-name').textContent = root.FinancialStatementDownloader.amz.displayName;
   let fileUploadPending = false;
   let refreshing = 0;
   let latestSnapshot = null;
@@ -18,9 +19,10 @@
   }
   async function refresh() {
     const version = ++refreshing;
-    const snapshot = await message('importSnapshot');
+    const [snapshot, preferences] = await Promise.all([message('importSnapshot'), message('capturePreferences')]);
     if (version !== refreshing) return;
     latestSnapshot = snapshot;
+    query('#collect-gift-cards').checked = preferences.giftCardsEnabled === true;
     const { settings, records } = snapshot;
     const state = root.FinancialStatementDownloader.importStatus.describe(snapshot);
     query('#connection').textContent = state.text;
@@ -70,6 +72,10 @@
     return result.requiresAccountChoice ? 'Review accounts before sending.' : 'Connected.';
   }));
   query('#use-new-account').addEventListener('click', () => connect(true));
+  query('#collect-gift-cards').addEventListener('change', () => run(async () => {
+    await message('configureCapturePreferences', { giftCardsEnabled: query('#collect-gift-cards').checked });
+    return query('#collect-gift-cards').checked ? 'Balance-page capture is on for pages you visit.' : 'Balance-page capture is off.';
+  }));
   query('#disconnect').addEventListener('click', () => run(async () => { await message('configureImports', { enabled: false }); return 'Imports paused.'; }));
   query('#sync').addEventListener('click', () => run(async () => {
     const result = await message('syncImports');

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
 
-function harness() {
+function harness(captureBackground) {
   let handler;
   let removed;
   const calls = [];
@@ -20,7 +20,7 @@ function harness() {
     async clear() { calls.push(['clear']); },
     async stop(reason) { calls.push(['stop', reason]); },
   };
-  const FSD = { amz, importStore: { createImportStore: () => store },
+  const FSD = { amz, captureBackground, importStore: { createImportStore: () => store },
     importClient: { ORIGIN: 'https://pfifi.com', createImportClient: () => ({}) },
     providers: { amz: { helpers: { pageKind(value) {
       const url = new URL(value);
@@ -122,4 +122,14 @@ test('account conflict is returned to settings without starting an automatic sen
   assert.equal(result.requiresAccountChoice, true);
   await new Promise(setImmediate);
   assert.equal(calls.filter(([kind]) => kind === 'flush').length, before);
+});
+
+test('direct balance capture messages cannot bypass the default-off capture policy', async () => {
+  const { handler, calls } = harness({ create: () => ({ async policy() { return { enabled: false }; } }) });
+  const result = await handler({ action: 'captureAmzGiftCardSnapshot', snapshot: {} }, {
+    url: `${amz.origin}/gc/balance`, frameId: 0, tab: { id: 1 },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /capture is off/);
+  assert.equal(calls.some(([kind]) => kind === 'captureGiftCard'), false);
 });

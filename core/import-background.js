@@ -4,6 +4,7 @@
   const FSD = root.FinancialStatementDownloader;
   const store = FSD.importStore.createImportStore();
   const client = FSD.importClient.createImportClient();
+  const surface = FSD.captureBackground?.create(store);
   const OPTIONS_URL = root.browser.runtime.getURL('options.html');
   const isOptions = (sender) => sender.url === OPTIONS_URL && !sender.tab?.incognito;
   const isAmz = (sender) => Boolean(sender.tab && !sender.tab.incognito && sender.frameId === 0
@@ -45,7 +46,14 @@
         const source = new URL(sender.url);
         if (FSD.providers.amz.helpers.pageKind(sender.url) !== 'detail'
           || source.searchParams.get('orderID') !== message.receipt?.order_id) throw new Error('Receipt does not match the open order.');
-        const result = await store.capture(message.receipt);
+        let result;
+        try {
+          result = await store.capture(message.receipt);
+        } catch (error) {
+          await surface?.failed(sender, message.receipt.order_id, error).catch(() => {});
+          throw error;
+        }
+        await surface?.saved(sender, result, message.receipt, 'receipt').catch(() => {});
         // Independent of the content script lifetime, so leaving the page does
         // not cancel a saved receipt or leave an in-progress marker behind.
         void sync();
@@ -57,7 +65,15 @@
     }
     if (message.action === 'captureAmzGiftCardSnapshot' && isAmz(sender) && isGiftCardPage(sender.url)) {
       return safely(async () => {
-        const result = await store.captureGiftCardSnapshot(message.snapshot);
+        if (surface && !(await surface.policy(sender)).enabled) throw new Error('Balance-page capture is off. Enable it in settings.');
+        let result;
+        try {
+          result = await store.captureGiftCardSnapshot(message.snapshot);
+        } catch (error) {
+          await surface?.failed(sender, null, error).catch(() => {});
+          throw error;
+        }
+        await surface?.saved(sender, result, message.snapshot, 'gift-card-snapshot').catch(() => {});
         void sync();
         return result;
       });

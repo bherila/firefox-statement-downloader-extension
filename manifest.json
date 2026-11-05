@@ -11,6 +11,7 @@
       "core/import-client.js",
       "core/import-store.js",
       "core/import-status.js",
+      "core/capture-background.js",
       "core/import-background.js",
       "background.js"
     ],
@@ -77,5 +78,9 @@
   "options_ui": {
     "page": "options.html",
     "open_in_tab": true
+  },
+  "browser_action": {
+    "default_title": "Receipts and document imports",
+    "default_popup": "popup.html"
   }
 }

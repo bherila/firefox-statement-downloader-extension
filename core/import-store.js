@@ -48,7 +48,7 @@
         || !['standard', 'whole_foods', 'fresh'].includes(receipt.layout)
         || !Array.isArray(receipt.items) || !receipt.items.length || receipt.items.length > 500
         || !Array.isArray(receipt.charges) || !receipt.charges.length || receipt.charges.length > 100) {
-        throw new Error('Invalid AMZ receipt.');
+        throw new Error(`Invalid ${FSD.amz.displayName} receipt.`);
       }
       const optionalText = (value, max = 2000) => {
         if (value === null || value === undefined) return null;
@@ -94,7 +94,7 @@
         || !Array.isArray(snapshot.activities) || snapshot.activities.length > 1000
         || typeof snapshot.has_previous_page !== 'boolean' || typeof snapshot.has_next_page !== 'boolean'
         || snapshot.coverage !== 'visible_page' || !Array.isArray(snapshot.warnings) || snapshot.warnings.length > 50) {
-        throw new Error('Invalid AMZ gift-card snapshot.');
+        throw new Error(`Invalid ${FSD.amz.displayName} gift-card snapshot.`);
       }
       const data = {
         schema: snapshot.schema, marketplace: snapshot.marketplace, currency: snapshot.currency,
@@ -106,7 +106,7 @@
             || (activity.balance_after_cents !== null && (!Number.isSafeInteger(activity.balance_after_cents) || activity.balance_after_cents < 0))
             || !Array.isArray(activity.order_ids) || activity.order_ids.length > 100
             || activity.order_ids.some((orderId) => typeof orderId !== 'string' || !/^\d{3}-\d{7}-\d{7}$/.test(orderId))) {
-            throw new Error('Invalid AMZ gift-card activity.');
+            throw new Error(`Invalid ${FSD.amz.displayName} gift-card activity.`);
           }
           // Load descriptions can contain redeemable claim codes. Store only
           // these typed cells and order references, never a raw description.
@@ -160,6 +160,7 @@
       return serial(async () => {
         const { settings, records } = await load();
         let record = records.find((item) => item.id === id);
+        const alreadySaved = Boolean(record);
         if (!record) {
           if (records.length >= MAX_RECORDS) throw new Error('Source storage is full. Export and clear sources in settings.');
           const prefix = kind === 'receipt' ? `amz-${data.order_id}` : 'amz-gift-card-balance';
@@ -179,7 +180,7 @@
           }
         }
         await saveRecords(records);
-        return { id, count: records.length };
+        return { id, count: records.length, alreadySaved };
       });
     }
 

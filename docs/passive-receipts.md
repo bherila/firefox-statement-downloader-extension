@@ -5,7 +5,7 @@
 1. Parse only the current order-detail DOM. Standard orders use semantic
    `data-component` markers; Whole Foods uses the item-list and charge-summary widgets;
    Fresh uses the full preloaded item table and charge breakdown. Never fetch, click,
-   navigate, or intercept broad network traffic. History pages mount the collection UI.
+   navigate, or intercept broad network traffic. No elements or attributes are added to merchant pages. Confirmation lives in the toolbar popup.
 2. Normalize a small, allowlisted receipt schema. Preserve source labels and printed dates,
    integer cents, counted/weighted quantities, missing values, and warnings. Do not infer
    a ledger account, transaction date, tax treatment, or reconciliation decision.
@@ -119,3 +119,9 @@ An indexed HTTP 422 validation response quarantines only the identified source a
 Sources with warnings wait 60 seconds from first capture before sending as partial evidence. A complete receipt observed within that wait suppresses the older unsent partial upload without deleting its local evidence. Gift-card partials require matching page evidence before suppression so visiting a different activity page cannot hide an incomplete observation.
 
 Settings show the destination full name (falling back to its number), queue counts, one prioritized state, and the next action. A mismatched account on Resume requires an explicit recipient choice; previously pinned sources never move. Pause is acknowledged immediately, can show Pausing while the in-flight batch completes, and prevents new batches across restart.
+
+### Toolbar and page footprint
+
+Receipt and gift-card adapters are passive providers; the content router never mounts their launcher or drawer. Existing institution download UIs are unchanged. The toolbar uses per-tab badges only, including an explicit empty badge in private windows. Saved confirmation follows background storage acknowledgement. Recent lists the last 20 confirmed saves across tabs. The popup has no order links or open-all action. History counts require one unambiguous supported order identity in every visible order card; otherwise they are omitted.
+
+Gift-card capture defaults off in a separate capture preference. Both the provider and background write path check that preference. Private windows read no source cells, store no sources, return no queue or Recent data, and receive no badge. Preferences notify only already-loaded supported tabs; no tabs are opened or navigated.

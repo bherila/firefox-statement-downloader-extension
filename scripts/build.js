@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 const runtime = {};
 vm.runInNewContext(fs.readFileSync(path.join(root, 'core/runtime.js'), 'utf8'), runtime);
 const { amz } = runtime.FinancialStatementDownloader;
-const assets = ['background.js', 'content.js', 'options.html', 'options.js', 'options.css', 'core', 'providers', 'README.md', 'docs'];
+const assets = ['background.js', 'content.js', 'options.html', 'options.js', 'options.css', 'popup.html', 'popup.js', 'popup.css', 'core', 'providers', 'README.md', 'docs'];
 
 function buildManifest(template = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'))) {
   const expanded = JSON.stringify(template)

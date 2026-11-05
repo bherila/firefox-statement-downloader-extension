@@ -1,6 +1,6 @@
 # Passive AMZ gift-card balance and activity capture
 
-The gift-card provider reads the current US balance page at `/gc/balance` or
+Gift-card capture is off by default. After it is enabled in settings, the provider reads the current US balance page at `/gc/balance` or
 `/gp/css/gc/balance`. It makes no requests, clicks no links, and does not change the
 balance, redeem a card, reload funds, or navigate history. Users browse Previous and
 Next themselves; each loaded page becomes a source snapshot.
@@ -20,8 +20,7 @@ produce `unparsed_activity_rows`, so an incomplete snapshot is labelled partial 
 Missing balances and unrecognized table layouts do not produce a snapshot.
 
 The provider uses the shared local source queue through `captureAmzGiftCardSnapshot`
-and `listAmzGiftCardSnapshots`. The drawer exports JSON through the normal batch
-download contract. The source payload has no generated timestamp; first-observed time
+and `listAmzGiftCardSnapshots`. Settings exports the held sources as JSON; the toolbar confirms saves without adding any page UI. The source payload has no generated timestamp; first-observed time
 belongs to the capture envelope, preventing repeated DOM observations from generating
 new payload hashes merely because time passed.
 

@@ -28,13 +28,12 @@ labeled charges, totals, and printed dates/status. It makes **no AMZ requests**,
 no links, and does not open orders or invoices. Order-history summaries alone do not contain
 the full receipt and are not saved as detailed receipts. Only US English layouts are supported.
 
-Use **Bulk download → Find documents → Download** to export collected receipts as JSON,
-or open the extension's settings for an archive export and upload status. Exact repeats
+Nothing is added to AMZ pages. Use the toolbar button for this tab’s confirmed save state, missing fields, and the last 20 saves across tabs. History counts are read-only and omitted if order cards cannot be read reliably. Export collected sources and review upload status in extension settings. Exact repeats
 are skipped; changed orders become separate revisions. Missing or unparseable item data
 marks a receipt as partial. A partial waits one minute before sending, giving the page time to finish loading. If a complete read arrives during that wait, the older partial is kept locally without being sent. Capture includes preloaded item tables, so Fresh's collapsed
 carousel does not restrict it to the initially visible products.
 
-In extension settings, **Connect and enable automatic receipt imports** requests optional
+In extension settings, **Connect to pfifi.com** requests optional
 access to `pfifi.com` and pins the currently signed-in account. The public browser-import
 API stores immutable receipt sources with their itemized data; receipt capture does not
 post ledger transactions or run AI. You can also select statement, payslip, utility-bill,
@@ -57,8 +56,7 @@ shipping addresses, payment credentials, and the HAR used for calibration are no
 
 The API contract, design, and remaining scope are in [docs/passive-receipts.md](docs/passive-receipts.md).
 
-Gift-card balance pages at `/gc/balance` and `/gp/css/gc/balance` are captured the same
-way. Browse their Previous/Next links yourself; each visited page saves its reported
+Gift-card balance capture is **off by default**. Enable it in settings before balance or activity cells are read. At `/gc/balance` and `/gp/css/gc/balance`, browse Previous/Next links yourself; each visited page then saves its reported
 balance, activity dates/types, signed amounts, per-row closing balances, linked order IDs,
 and pagination indicators. Raw descriptions are excluded because they can contain
 redeemable claim codes. Each snapshot explicitly covers only the page you viewed.

@@ -27,6 +27,7 @@ test('storage refresh cannot permit a second explicit upload while the first is 
     storage: { onChanged: { addListener(listener) { storageChanged = listener; } } },
   };
   const scope = vm.createContext({ document, browser, TextEncoder, Uint8Array, Date });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/runtime.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-status.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../options.js'), 'utf8'), scope);
   await new Promise(setImmediate);
@@ -55,6 +56,7 @@ async function settingsPage(settings, response = async () => ({})) {
     return { ok: true, ...await response(message) };
   } }, permissions: { async request() { return true; } } };
   const scope = vm.createContext({ document, browser, TextEncoder, Uint8Array, Date });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/runtime.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../core/import-status.js'), 'utf8'), scope);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../options.js'), 'utf8'), scope);
   await new Promise(setImmediate);
@@ -90,4 +92,19 @@ test('Resume presents both account names before an explicit new-recipient choice
   await new Promise(setImmediate);
   assert.equal(settings.userId, 200000001);
   assert.equal(calls.filter((message) => message.action === 'configureImports')[1].useNewAccount, true);
+});
+
+test('balance capture is off by default and changes only through the explicit switch', async () => {
+  let enabled = false;
+  const { document, calls } = await settingsPage({ enabled: false, userId: null }, async (message) => {
+    if (message.action === 'configureCapturePreferences') enabled = message.giftCardsEnabled;
+    return { giftCardsEnabled: enabled };
+  });
+  const checkbox = document.querySelector('#collect-gift-cards');
+  assert.equal(checkbox.checked, false);
+  assert.equal(calls.some((message) => message.action === 'configureCapturePreferences'), false);
+  checkbox.checked = true; checkbox.dispatchEvent(new document.defaultView.Event('change'));
+  await new Promise(setImmediate);
+  assert.equal(enabled, true);
+  assert.equal(calls.filter((message) => message.action === 'configureCapturePreferences').length, 1);
 });

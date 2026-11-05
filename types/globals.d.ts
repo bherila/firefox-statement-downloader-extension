@@ -18,6 +18,7 @@ interface FsdProvider {
   downloadDocument(document: any, report?: any, controller?: any): Promise<any>;
   loadState?(): Promise<any>;
   observePage?(): Promise<void>;
+  passive?: boolean;
   matches?(url: string): boolean;
   requiresDateRange?: boolean;
   docTypes?: Array<{ code: string; label: string }>;
