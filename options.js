@@ -2,6 +2,7 @@
   'use strict';
   /** @returns {any} */
   const query = (selector) => root.document.querySelector(selector);
+  let fileUploadPending = false;
   async function message(action, extra = {}) {
     const result = await root.browser.runtime.sendMessage({ action, ...extra });
     if (!result || !result.ok) throw new Error(result?.error || 'Extension background is unavailable.');
@@ -14,7 +15,7 @@
     query('#counts').textContent = `${records.length} saved revisions · ${records.filter((record) => record.status === 'received').length} received by destination · ${records.filter((record) => record.data.warnings.length).length} need review locally`;
     query('#sync').disabled = !settings.enabled;
     query('#connect').disabled = settings.enabled;
-    query('#upload').disabled = !settings.enabled;
+    query('#upload').disabled = !settings.enabled || fileUploadPending;
     query('#disconnect').disabled = !settings.enabled;
     query('#receipts').replaceChildren();
     for (const record of [...records].reverse()) {
@@ -51,18 +52,27 @@
       void run(async () => { await message('clearImports'); return 'Local receipts cleared.'; });
     }
   });
-  query('#upload').addEventListener('click', () => run(async () => {
-    const file = query('#file').files[0];
-    if (!file || file.size > 20 * 1024 * 1024) throw new Error('Choose a file no larger than 20 MiB.');
-    const extension = file.name.split('.').pop().toLowerCase();
-    const types = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', csv: 'text/csv', txt: 'text/plain' };
-    if (!types[extension]) throw new Error('Choose a PDF, PNG, JPEG, CSV, or text file.');
+  query('#upload').addEventListener('click', async () => {
+    if (fileUploadPending) return;
+    fileUploadPending = true;
     query('#upload').disabled = true;
-    const result = await message('uploadImportFile', { data: Array.from(new Uint8Array(await file.arrayBuffer())),
-      filename: file.name, contentType: types[extension], jobType: query('#job-type').value });
-    query('#file').value = '';
-    return `Upload received as job ${result.remoteId}. Review it in Import Center.`;
-  }));
+    try {
+      await run(async () => {
+        const file = query('#file').files[0];
+        if (!file || file.size > 20 * 1024 * 1024) throw new Error('Choose a file no larger than 20 MiB.');
+        const extension = file.name.split('.').pop().toLowerCase();
+        const types = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', csv: 'text/csv', txt: 'text/plain' };
+        if (!types[extension]) throw new Error('Choose a PDF, PNG, JPEG, CSV, or text file.');
+        const result = await message('uploadImportFile', { data: Array.from(new Uint8Array(await file.arrayBuffer())),
+          filename: file.name, contentType: types[extension], jobType: query('#job-type').value });
+        query('#file').value = '';
+        return `Upload received as job ${result.remoteId}. Review it in Import Center.`;
+      });
+    } finally {
+      fileUploadPending = false;
+      await refresh().catch((error) => { query('#status').textContent = error.message; });
+    }
+  });
   void refresh().catch((error) => { query('#status').textContent = error.message; });
   root.browser.runtime.onMessage?.addListener((event) => {
     if (event.event === 'importRateLimited') query('#status').textContent = `Rate limited; retrying automatically after ${new Date(event.retryAt).toLocaleTimeString()}. Pause imports to stop retrying.`;
