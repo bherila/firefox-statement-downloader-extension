@@ -81,7 +81,9 @@ test('rejects invalid receipts and unsafe money instead of queuing them', async 
 
 test('code-shaped receipt text never reaches local storage, export, or upload', async () => {
   // Deliberately synthetic examples, never redeemable codes from a page.
-  const codes = ['ABCD-123456-EFGH', 'ABCD-123456-EFGH5', 'abcd123456efgh', 'ABCD123456EFGH5'];
+  const codes = ['ABCD-123456-EFGH', 'ABCD-123456-EFGH5', 'abcd123456efgh', 'ABCD123456EFGH5',
+    'Example—ABCD-123456-EFGH', 'ABCD-123456-EFGH-example', 'Example-abcd123456efgh-word',
+    'Example—ABCD–123456–EFGH—word'];
   for (const field of ['title', 'status_text', 'seller', 'condition', 'label', 'order_date_text', 'delivery_date_text']) {
     for (const code of codes) {
       const { store, saved, uploads } = harness();
